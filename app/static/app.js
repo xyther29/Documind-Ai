@@ -366,15 +366,16 @@
 
       card.innerHTML = `
         <div class="doc-card-header">
-          <span class="doc-filename">${escapeHtml(doc.filename)}</span>
+          <span class="doc-filename">
+            <span class="pdf-tag" aria-label="PDF file">PDF</span>
+            ${escapeHtml(doc.filename)}
+          </span>
           <button type="button" class="doc-delete-btn" title="Delete document from memory" aria-label="Delete document">Delete</button>
         </div>
         <div class="doc-meta-row">
-          <span>${pagesLabel}</span>
-          <span>·</span>
-          <span>${chunksLabel}</span>
-          <span>·</span>
-          <span>${sizeLabel}</span>
+          <span class="meta-chip chip-pages">${pagesLabel}</span>
+          <span class="meta-chip chip-chunks">${chunksLabel}</span>
+          <span class="meta-chip chip-size">${sizeLabel}</span>
         </div>
       `;
 
@@ -425,7 +426,7 @@
       const sourceItems = askData.sources
         .map((src, idx) => {
           const passageId = `passage-${Math.random().toString(36).substring(2, 9)}-${idx}`;
-          const scoreText = typeof src.score === "number" ? `Score: ${src.score.toFixed(4)}` : "";
+          const scoreText = typeof src.score === "number" ? `<span class="chip-score">Score: ${src.score.toFixed(4)}</span>` : "";
 
           return `
             <div class="source-item">
