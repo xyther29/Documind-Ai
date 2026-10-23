@@ -1,9 +1,12 @@
 """FastAPI application for DocuMind AI."""
 
-import uuid
+from pathlib import Path
 from typing import Annotated, Optional
+import uuid
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings, get_settings
 from app.models.schemas import (
@@ -79,6 +82,28 @@ def create_app(
     application.state.store = app_store
     application.state.retriever = app_retriever
     application.state.qa_service = app_qa_service
+
+    # --------------------------------------------------------------------------
+    # Frontend Static Files and Root Route
+    # --------------------------------------------------------------------------
+    static_dir = Path(__file__).resolve().parent / "static"
+    if static_dir.is_dir():
+        application.mount(
+            "/static",
+            StaticFiles(directory=static_dir),
+            name="static",
+        )
+
+    @application.get("/", response_class=FileResponse)
+    def serve_frontend() -> FileResponse:
+        """Serve the single-page HTML frontend."""
+        index_file = static_dir / "index.html"
+        if not index_file.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Frontend index.html not found.",
+            )
+        return FileResponse(index_file, media_type="text/html")
 
     # --------------------------------------------------------------------------
     # Health Endpoint

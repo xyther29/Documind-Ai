@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DocuMind AI — Document Q&amp;A Demo</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- Header Bar -->
+  <header class="app-header">
+    <div class="header-brand">
+      <span class="brand-title">DocuMind AI</span>
+      <span class="brand-divider">|</span>
+      <span class="brand-subtitle">Document Q&amp;A Demo</span>
+    </div>
+    <div class="header-status">
+      <span id="backend-status-indicator" class="status-dot status-offline" aria-hidden="true"></span>
+      <span id="backend-status-text" class="status-label">Connecting...</span>
+      <span class="status-divider">·</span>
+      <span id="docs-count-text" class="status-label">0 documents in memory</span>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <div class="app-container">
+    <!-- Sidebar: Documents and Ingestion -->
+    <aside class="sidebar" aria-label="Document Management">
+      <!-- Upload Section -->
+      <section class="sidebar-section">
+        <h2 class="section-title">Upload Document</h2>
+        <div id="drop-zone" class="drop-zone" tabindex="0" role="region" aria-label="PDF upload drop zone">
+          <p class="drop-text">Select a PDF document (max 10 MB)</p>
+          <input type="file" id="pdf-input" accept="application/pdf" class="visually-hidden">
+          <button type="button" id="browse-btn" class="btn btn-secondary">Browse PDF</button>
+        </div>
+        <div id="upload-status" class="status-message" aria-live="polite"></div>
+      </section>
+
+      <!-- Document Library Section -->
+      <section class="sidebar-section docs-section">
+        <div class="section-header-row">
+          <h2 class="section-title">Document Scope</h2>
+        </div>
+
+        <div id="document-list" class="document-list" aria-live="polite" role="radiogroup" aria-label="Select document search scope">
+          <div class="empty-state">No documents in memory. Upload a PDF above to begin.</div>
+        </div>
+      </section>
+    </aside>
+
+    <!-- Main Workspace: Chat and Citations -->
+    <main class="workspace" aria-label="Question Answering Workspace">
+      <!-- Scope Notification Bar -->
+      <div class="scope-bar">
+        <span class="scope-label">Active Scope:</span>
+        <span id="active-scope-text" class="scope-value">All Documents</span>
+        <button type="button" id="reset-scope-btn" class="btn-text-action hidden" title="Switch back to searching all documents">Switch to All Documents</button>
+      </div>
+
+      <!-- Global Alert / Error Banner -->
+      <div id="alert-banner" class="alert-banner hidden" role="alert" aria-live="assertive">
+        <span id="alert-text" class="alert-text"></span>
+        <button type="button" id="alert-close-btn" class="alert-close" aria-label="Close notification">&times;</button>
+      </div>
+
+      <!-- Conversation Log / Q&A Stream -->
+      <div id="chat-stream" class="chat-stream" aria-live="polite">
+        <!-- Initial Guidance Box -->
+        <div id="welcome-card" class="welcome-card">
+          <h3 class="welcome-title">DocuMind AI — Retrieval-Augmented Generation Demo</h3>
+          <p class="welcome-desc">
+            Upload PDF documents to query content using TF-IDF passage retrieval and grounded answer synthesis with page citations.
+          </p>
+          <ol class="welcome-steps">
+            <li><strong>Upload:</strong> Choose a PDF file (up to 10 MB). Text pages are extracted and split into attributed chunks.</li>
+            <li><strong>Scope:</strong> Choose <em>All Documents</em> to search across your full collection, or select an individual document to restrict retrieval.</li>
+            <li><strong>Ask:</strong> Enter a question below. The system retrieves the top matching passages and generates a grounded response.</li>
+            <li><strong>Verify:</strong> Review the page-level citations and expand the source passage accordions to verify the source text.</li>
+            <li><strong>Grounding:</strong> If the question cannot be answered from the document, the system strictly returns: <em>The document does not contain this information.</em></li>
+          </ol>
+        </div>
+      </div>
+
+      <!-- Docked Question Input Bar -->
+      <footer class="input-footer">
+        <form id="ask-form" class="ask-form">
+          <div class="input-controls-row">
+            <label for="question-input" class="visually-hidden">Question</label>
+            <input
+              type="text"
+              id="question-input"
+              class="text-input"
+              placeholder="Ask a question grounded in the uploaded document..."
+              autocomplete="off"
+              required
+            >
+
+            <div class="top-k-wrapper">
+              <label for="top-k-select" class="top-k-label">Passages:</label>
+              <select id="top-k-select" class="select-input" title="Number of passages to retrieve">
+                <option value="2">2</option>
+                <option value="4" selected>4</option>
+                <option value="6">6</option>
+                <option value="8">8</option>
+              </select>
+            </div>
+
+            <button type="submit" id="ask-btn" class="btn btn-primary">Ask Question</button>
+          </div>
+          <div id="ask-status" class="ask-status-text" aria-live="polite"></div>
+        </form>
+      </footer>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

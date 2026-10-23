@@ -377,3 +377,68 @@ def test_ask_endpoint_validation_errors(test_client):
     )
     assert resp_zero.status_code == 422
 
+
+def test_root_serves_frontend_html(test_client):
+    """Verify GET / serves the single-page HTML frontend with 200 OK."""
+    response = test_client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers.get("content-type", "")
+    assert "<title>DocuMind AI" in response.text
+    assert "DocuMind AI" in response.text
+    assert 'id="drop-zone"' in response.text
+    assert 'id="ask-form"' in response.text
+    assert 'id="document-list"' in response.text
+    assert 'id="reset-scope-btn"' in response.text
+    # Verify misleading "clear-scope-btn" / "Select All" button was cleanly replaced
+    assert 'id="clear-scope-btn"' not in response.text
+    # Verify no visible Gemini branding
+    assert "Gemini answer" not in response.text
+
+
+def test_static_assets_served(test_client):
+    """Verify static CSS and JS assets are successfully accessible via /static/."""
+    css_resp = test_client.get("/static/style.css")
+    assert css_resp.status_code == 200
+    assert "text/css" in css_resp.headers.get("content-type", "")
+
+    js_resp = test_client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "javascript" in js_resp.headers.get("content-type", "")
+
+
+def test_ask_endpoint_all_documents_scope_without_doc_id(test_client, make_pdf):
+    """Verify omitting doc_id in /api/documents/ask searches across all uploaded documents."""
+    pdf_a = make_pdf(["Quantum computing uses qubits for quantum parallelism."])
+    pdf_b = make_pdf(["Photosynthesis converts sunlight into biochemical energy."])
+
+    resp_a = test_client.post(
+        "/api/documents/upload",
+        files={"file": ("quantum.pdf", pdf_a, "application/pdf")},
+    )
+    assert resp_a.status_code == 201
+
+    resp_b = test_client.post(
+        "/api/documents/upload",
+        files={"file": ("biology.pdf", pdf_b, "application/pdf")},
+    )
+    assert resp_b.status_code == 201
+
+    # Ask query matching doc A without specifying doc_id (global "All Documents" scope)
+    ask_resp_a = test_client.post(
+        "/api/documents/ask",
+        json={"question": "What does quantum computing use?"},
+    )
+    assert ask_resp_a.status_code == 200
+    data_a = ask_resp_a.json()
+    assert len(data_a["sources"]) >= 1
+    assert data_a["sources"][0]["filename"] == "quantum.pdf"
+
+    # Ask query matching doc B without specifying doc_id (global "All Documents" scope)
+    ask_resp_b = test_client.post(
+        "/api/documents/ask",
+        json={"question": "What is photosynthesis?"},
+    )
+    assert ask_resp_b.status_code == 200
+    data_b = ask_resp_b.json()
+    assert len(data_b["sources"]) >= 1
+    assert data_b["sources"][0]["filename"] == "biology.pdf"
