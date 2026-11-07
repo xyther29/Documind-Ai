@@ -13,3 +13,11 @@ __pycache__/
 
 # Pytest cache
 .pytest_cache/
+
+# Frontend dependencies and generated builds
+node_modules/
+dist/
+*.tsbuildinfo
+
+# IDE workspace settings
+.vscode/

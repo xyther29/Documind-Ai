@@ -1,6 +1,6 @@
 # DocuMind AI — Document Q&A Learning Workspace
 
-DocuMind AI is a student-built, retrieval-augmented question answering workspace. It allows learners to upload PDF course readings, extract and chunk text with page-level attribution, search relevant passages using TF-IDF and cosine similarity, and receive grounded answers supported by exact source citations.
+DocuMind AI is a retrieval-augmented document question-answering workspace built with FastAPI and React 19. It allows students and researchers to upload PDF documents, extract and chunk text with page-level attribution, search relevant passages using precomputed TF-IDF vector similarity, and receive grounded answers supported by interactive citations.
 
 ---
 
@@ -8,39 +8,39 @@ DocuMind AI is a student-built, retrieval-augmented question answering workspace
 
 ```mermaid
 flowchart TD
-    User["Student / Examiner"] --> Frontend["React 19 + TypeScript + Tailwind CSS\n(Vite 6 / Lucide Icons)"]
-    Frontend -->|"REST API (/api/*)"| FastAPI["FastAPI Backend Application\n(Python 3.12)"]
+    User["Student / Examiner"] --> Frontend["React 19 + TypeScript + Tailwind CSS\n(Interactive Citations / Lucide Icons)"]
+    Frontend -->|"REST API (/api/*)"| FastAPI["FastAPI Application (Python 3.12)\nLifespan Reusable AsyncClient"]
     
-    subgraph Backend Services
-        FastAPI --> PDFService["PDF Service\n(pypdf extraction & validation)"]
-        FastAPI --> ChunkingService["Chunking Service\n(120 words / 30-word overlap)"]
-        FastAPI --> Store["In-Memory Document Store\n(RAM Corpus)"]
-        FastAPI --> Retriever["TF-IDF Retrieval Service\n(scikit-learn & cosine similarity)"]
-        FastAPI --> QAService["Gemini QA Service\n(Prompt Injection Defense & Grounding)"]
+    subgraph Backend Concurrency & Storage
+        FastAPI -->|"run_in_threadpool"| PDFService["PDF Service\n(pypdf extraction & validation)"]
+        FastAPI -->|"run_in_threadpool"| ChunkingService["Chunking Service\n(120 words / 30-word overlap)"]
+        FastAPI --> Store["InMemoryDocumentStore\n(RLock Protected & Atomic Version Snapshots)"]
+    end
+
+    subgraph Fast Retrieval & Grounding
+        FastAPI --> Retriever["TfidfRetriever\n(Precomputed TF-IDF Matrix Caching)"]
+        Retriever -->|"Cache Invalidation on Version Drift"| Store
+        FastAPI --> QAService["GeminiQAService\n(Native system_instruction & XML Isolation)"]
     end
     
-    QAService -->|"HTTPS POST (v1beta)"| GeminiAPI["Google Gemini API\n(gemini-3.5-flash-lite)"]
+    QAService -->|"HTTPS POST (httpx.AsyncClient)"| GeminiAPI["Google Gemini REST API\n(v1beta Endpoint)"]
     QAService -.->|"Failover / No Key"| Fallback["Passage-Only Fallback Engine"]
 ```
 
-### Invariant Grounding Rules
-- **Strict Citation**: Answers cite exact page numbers and filenames (e.g. `[syllabus.pdf, p. 1]`).
-- **Unsupported Questions**: If the document lacks evidence, the system strictly returns:
+### Core Grounding Invariants
+- **Exact Citations**: Answers cite source documents and page numbers (e.g. `[sample_rag_primer.pdf, p. 1]`). Clicking citation badges in the UI scrolls to and highlights the corresponding passage excerpt.
+- **Strict Negative Grounding**: If the document does not contain sufficient facts to answer the question, the system strictly returns:
   > `The document does not contain this information.`
-- **Honest Fallback**: If the Gemini service is unavailable or unkeyed, the app returns retrieved passages with an explicit `[Passage-only fallback]` notice.
+- **Resilient Fallback**: If Gemini is offline, unkeyed, or rate-limited, DocuMind AI returns retrieved passages with an explicit `[Passage-only fallback]` notice.
+- **Prompt Injection Defense**: Passages are wrapped in XML tags (`<documents><passage ...>`) with character escaping (`escape` + `quoteattr`), and system rules are delivered via privileged `system_instruction`.
 
 ---
 
-## 2. Prerequisites & Environment Setup
+## 2. Prerequisites
 
 - **Operating System**: macOS, Linux, or Windows (WSL2 recommended)
 - **Python**: 3.12+
 - **Node.js**: v20+ (Verified on Node.js v26.12.1 and npm 11.20.0)
-
-### Clone & Enter Directory
-```bash
-cd /path/to/documind-ai
-```
 
 ---
 
@@ -52,7 +52,7 @@ Create a `.env` file from the example template:
 cp .env.example .env
 ```
 
-Edit `.env` with your preferred configuration:
+Configure `.env` as needed:
 
 ```env
 # Server Binding
@@ -72,127 +72,137 @@ GEMINI_TIMEOUT_SECONDS=30.0
 ```
 
 > [!IMPORTANT]
-> Never commit `.env` or expose API keys. The `.gitignore` is pre-configured to keep secrets out of version control. If `GEMINI_API_KEY` is omitted or left as placeholder, the system gracefully activates passage-only fallback mode.
+> Never commit `.env` or expose API keys. If `GEMINI_API_KEY` is omitted or left as a placeholder, the system activates passage-only fallback mode without crashing.
 
 ---
 
-## 4. Backend Setup
+## 4. One-Command Startup
 
-Set up a virtual environment and install backend dependencies:
-
-```bash
-# Create virtual environment
-python3.12 -m venv .venv
-
-# Activate virtual environment
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
----
-
-## 5. Frontend Setup & Build
-
-The modern React frontend lives in `frontend/`. Install dependencies:
+DocuMind AI includes an executable launcher script that validates the environment, builds the frontend bundle if needed, and starts the server:
 
 ```bash
-cd frontend
-npm install
+# Make script executable (first time only)
+chmod +x run.sh
+
+# Run production application
+./run.sh
 ```
 
-### Build for Production (Option A — Recommended)
-```bash
-npm run build
-```
-This compiles the TypeScript code and Tailwind styles into `frontend/dist/`. FastAPI is configured to automatically serve this production bundle when `GET /` is requested.
-
----
-
-## 6. Running the Application
-
-### Production Mode (Single Process)
-Build the frontend once, then start FastAPI:
-
-```bash
-# 1. Build React frontend (from repository root)
-cd frontend && npm run build && cd ..
-
-# 2. Start FastAPI server
-.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
-Open **`http://127.0.0.1:8000`** in your browser. FastAPI serves the compiled React application directly.
+Open **`http://127.0.0.1:8000`** in your browser.
 
 ### Development Mode (Hot-Reload)
-Run both processes in separate terminal windows:
+To develop with live hot-reloading across both backend and frontend:
 
-**Terminal 1 — FastAPI Backend**:
 ```bash
-.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+./run.sh --dev
 ```
-
-**Terminal 2 — Vite Dev Server**:
-```bash
-cd frontend && npm run dev
-```
-Open **`http://127.0.0.1:5173`**. The Vite server proxies all `/api/*` calls directly to the FastAPI backend on port 8000.
+- **Backend API**: `http://127.0.0.1:8000` (auto-reloads on Python file edits)
+- **Vite Dev Server**: `http://localhost:5173` (hot module replacement)
 
 ---
 
-## 7. Running the Test Suite
+## 5. REST API Endpoints Specification
 
-Run the full automated pytest suite (96 unit and integration tests):
+| Method | Endpoint | Request Body | Response | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `GET` | `/api/health` | _None_ | `{"status": "ok", "documents_count": int, "chunks_count": int}` | Health check and corpus metrics. |
+| `POST` | `/api/documents/upload` | `multipart/form-data` (`file: PDF`) | `DocumentMeta` JSON | Ingests PDF (max 10 MB), validates text, chunks pages. |
+| `GET` | `/api/documents` | _None_ | `{"documents": [...], "total": int}` | Lists all documents currently stored in memory. |
+| `DELETE`| `/api/documents/{doc_id}` | _None_ | `{"message": str, "doc_id": str}` | Deletes document and chunks; invalidates retrieval cache. |
+| `POST` | `/api/documents/search` | `{"query": str, "doc_id"?: str, "top_k"?: int}` | `{"query": str, "results": [...], "total_results": int}` | Searches chunks using precomputed TF-IDF index. |
+| `POST` | `/api/documents/ask` | `{"question": str, "doc_id"?: str, "top_k"?: int}` | `{"question": str, "answer": str, "sources": [...], ...}` | Generates grounded answer with source citations. |
+| `GET` | `/` | _None_ | `text/html` | Serves React production SPA (or fallback `app/static/`). |
+
+---
+
+## 6. Verification and Automated Testing
+
+### Backend Unit & Integration Tests (108 Tests)
+Run the automated test suite:
 
 ```bash
 .venv/bin/pytest tests/ -v
 ```
 
-All 96 tests cover:
-- PDF page extraction, extension checks, 10 MB limit enforcement, and corrupted/empty file rejection.
-- Text chunking word counts, 30-word overlaps, and page boundary attribution.
-- In-memory document storage CRUD and chunk filtering.
-- TF-IDF retrieval scoring, acronym expansion, and tie-breaking.
-- Grounded prompt construction and prompt injection defenses.
-- Upstream Gemini timeout diagnostics (`ConnectTimeout`, `ReadTimeout`).
-- Fallback activation and exact unsupported-answer sentence preservation.
-- Static asset serving and production bundle delivery.
+All 108 tests verify:
+- **PDF Extraction**: Magic byte validation, 10 MB cap, blank PDF rejection, corrupt stream handling.
+- **Chunking**: Target word counts, 30-word overlap, multi-page boundary attribution.
+- **Thread-Safe Storage**: `threading.RLock()` protection under 60 concurrent worker threads.
+- **Precomputed TF-IDF Retrieval**: Version-based cache invalidation, acronym expansion, and tie-breaking.
+- **Prompt Security**: XML escaping (`escape` + `quoteattr`), `system_instruction` formatting, and prompt-injection resilience.
+- **FastAPI Lifespan**: Reusable `httpx.AsyncClient` connection pooling and shutdown cleanup.
+
+### End-to-End Workflow & Headless Chrome Verification
+Execute the automated end-to-end journey:
+
+```bash
+.venv/bin/python scripts/verify_e2e.py
+```
+
+This verifies:
+1. Health check initialization.
+2. Canonical PDF upload (`demo/sample_rag_primer.pdf`).
+3. Document listing and chunk attribution.
+4. TF-IDF retrieval scoring.
+5. Grounded Q&A with citations.
+6. Unsupported question abstention (`The document does not contain this information.`).
+7. Fallback activation when Gemini is unconfigured.
+8. Document deletion and store cleanup.
+9. Headless Google Chrome DOM inspection (Desktop 1280x800 and Mobile 375x667).
 
 ---
 
-## 8. Repeatable Two-Minute Examiner Demo
+## 7. Repeatable Three-Minute Demonstration Workflow
 
-Follow this scripted walkthrough during your project demonstration:
+Follow this scripted walkthrough during your project demonstration using the canonical sample document:
+
+```bash
+# Ensure sample PDF exists
+python demo/generate_sample_pdf.py
+
+# Launch the platform
+./run.sh
+```
 
 1. **Launch**:
-   Start the application and navigate to `http://127.0.0.1:8000`. Point out the **In-Memory Session** header badge and the **Backend: Online** status indicator.
-2. **Upload a PDF**:
-   - Drag and drop a sample PDF (e.g. 1–5 MB) into the upload area.
-   - Observe the **truthful upload byte progress bar** streaming transfer progress, followed by the indeterminate chunking state as the server extracts pages.
-   - Point out the resulting document card showing accurate **page count**, **chunk count**, and **file size**.
-3. **Inspect Search Scope**:
-   - Show the **All Documents** card at the top of the sidebar.
-   - Click an individual document to demonstrate scope restriction. Show that the **Active Scope** banner updates immediately.
-4. **Ask a Grounded Question**:
-   - Click a quick-prompt chip (e.g., *"Summarize the key points"*) or type a specific question about the document.
-   - Point out the active searching state, disabled input (preventing double-submission), and the synthesized answer.
-   - Highlight the **page citation badge** (e.g., `[report.pdf, p. 2]`) and the cosine similarity score pill.
-   - Click **View passage** to expand the exact retrieved text chunk for evidence verification.
-5. **Test Unsupported Questions**:
-   - Ask an unrelated question (e.g., *"What is the recipe for baking chocolate chip cookies?"*).
-   - Show that the system strictly and honestly returns:
+   Navigate to `http://127.0.0.1:8000`. Point out the **DocuMind AI** navigation header, the **In-Memory Session** indicator, and the empty document library.
+2. **Upload Canonical Sample PDF**:
+   - Drag and drop `demo/sample_rag_primer.pdf` (3 pages) into the upload zone.
+   - Point out the upload progress bar followed by chunking.
+   - Highlight the created card: **3 pages**, **4 chunks**, **~4.5 KB**.
+3. **Ask a Grounded Question (Page 1 Grounding)**:
+   - Query: *"What is Retrieval-Augmented Generation and how does chunking work?"*
+   - Point out the synthesized answer. Click the interactive citation badge `[sample_rag_primer.pdf, p. 1]`.
+   - Observe the smooth scroll and highlight ring on the corresponding citation card.
+   - Click **View passage** to show the exact source evidence.
+   - Click **Copy** to demonstrate one-click citation copying.
+4. **Ask an Acronym & Retrieval Question (Page 2 Grounding)**:
+   - Query: *"How does TF-IDF calculate similarity scores?"*
+   - Show that the answer cites `p. 2` with cosine similarity explanation.
+5. **Demonstrate Unsupported Question Abstention**:
+   - Query: *"What is the recipe for baking chocolate chip cookies?"*
+   - Point out the exact honest abstention returned:
      > `The document does not contain this information.`
-6. **Explain Fallback Resilience**:
-   - Explain that if the network drops or API limits occur, DocuMind AI does not crash; it displays a clearly labeled `Passage-only fallback` badge using the retrieved evidence.
-7. **Copy Note & Reset**:
-   - Click **Copy Note** to copy the formatted Markdown note with citations.
-   - Click **Clear Chat** to reset the conversation log for the next query.
+6. **Demonstrate Resilience**:
+   - Explain that if Gemini API keys are omitted or network limits occur, the platform activates **Passage-Only Fallback** with retrieved excerpts rather than failing.
+7. **Clean Library Reset**:
+   - Click the trash icon on the document card to delete it. Show that health metrics reset to 0 documents.
+
+---
+
+## 8. Troubleshooting Guide
+
+| Issue | Cause | Solution |
+| :--- | :--- | :--- |
+| **`Error: Port 8000 is already in use`** | Another process is listening on port 8000. | Check running processes with `lsof -i :8000` or configure a different port in `.env` (e.g. `PORT=8080`). |
+| **`Frontend index.html not found`** | The React bundle has not been built yet. | Run `npm run build --prefix frontend` or use `./run.sh` which builds it automatically. |
+| **`Gemini API key is not configured`** | `GEMINI_API_KEY` is not present in `.env`. | This is normal for offline testing; DocuMind operates in passage-only fallback mode. To enable AI synthesis, set a valid key in `.env`. |
+| **`File exceeds maximum allowed limit`** | Uploaded file exceeds 10 MB. | Ensure PDFs are under 10 MB or adjust `MAX_FILE_SIZE_BYTES` in `.env`. |
 
 ---
 
 ## 9. Known Limitations
 
-- **In-Memory Storage**: Documents and chunks reside in server RAM for this demo. Restarting the backend process clears the library.
-- **Single-User Workspace**: Designed as a local/student demo; does not include multi-tenant user accounts, OAuth, or durable database persistence.
-- **Client-Side File Transfer Tracking**: Upload progress measures client-to-server HTTP byte transmission. Server-side text chunking is executed synchronously upon transfer completion.
-- **Fallback Vanilla Interface**: The original vanilla HTML/CSS/JS frontend remains preserved in `app/static/` and is served automatically if `frontend/dist/` is not present.
+- **In-Memory Volatility**: Document chunks and indices reside in server RAM for this demo. Restarting the backend process clears uploaded files.
+- **Single-User Workspace**: Designed as an educational prototype; does not currently include multi-tenant user authentication or relational databases.
+- **Fallback Interface**: If `frontend/dist/` is removed, FastAPI automatically serves the original vanilla HTML/CSS fallback from `app/static/`.

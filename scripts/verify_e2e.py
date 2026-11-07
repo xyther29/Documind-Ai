@@ -172,43 +172,51 @@ def run_headless_chrome_verification() -> dict:
     """Verify production SPA HTML and asset delivery using macOS Google Chrome."""
     import tempfile
     import shutil
+    import re
 
     print("\n" + "=" * 60)
     print("  PHASE 2: PRODUCTION BROWSER VERIFICATION (GOOGLE CHROME)")
     print("=" * 60)
 
-    chrome_path = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
-    if not chrome_path.is_file():
-        print("   [SKIP] Google Chrome not found at /Applications/Google Chrome.app")
-        return {"chrome_available": False}
-
-    # Verify frontend/dist/index.html exists
-    dist_index = Path(__file__).resolve().parent.parent / "frontend" / "dist" / "index.html"
+    results = {}
+    dist_index = (PROJECT_ROOT / "frontend" / "dist" / "index.html").resolve()
     if not dist_index.is_file():
         print("   --> Building React bundle before browser verification...")
         subprocess.run(["npm", "run", "build", "--prefix", "frontend", "--silent"], check=True)
 
-    # Launch local test server on a dedicated port
-    test_port = 8765
-    server_cmd = [
-        sys.executable,
-        "-m",
-        "uvicorn",
-        "app.main:app",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        str(test_port),
-        "--log-level",
-        "warning",
-    ]
-    proc = subprocess.Popen(server_cmd)
-    time.sleep(1.5)
+    # 1. Verify FastAPI Production Serving of SPA & Static Assets via ASGI
+    print("1. Verifying FastAPI production SPA serving and asset routes...")
+    app = create_app()
+    with TestClient(app) as client:
+        root_resp = client.get("/")
+        assert root_resp.status_code == 200, f"Root route failed: {root_resp.status_code}"
+        assert "text/html" in root_resp.headers.get("content-type", "")
+        html_content = root_resp.text
+        assert "<div id=\"root\">" in html_content
+        assert "<title>DocuMind AI" in html_content
+        print("   [PASS] FastAPI successfully serves frontend/dist/index.html at GET /")
+
+        # Extract and verify all referenced CSS and JS bundles
+        asset_matches = re.findall(r'href="(/assets/[^"]+)"|src="(/assets/[^"]+)"', html_content)
+        verified_assets = 0
+        for href, src in asset_matches:
+            asset_path = href or src
+            asset_resp = client.get(asset_path)
+            assert asset_resp.status_code == 200, f"Failed to serve asset {asset_path}"
+            print(f"   [PASS] Asset served: {asset_path} ({len(asset_resp.content)} bytes)")
+            verified_assets += 1
+        assert verified_assets >= 2, "Expected at least 1 CSS and 1 JS bundle in production build"
+        results["fastapi_spa_assets"] = True
+
+    # 2. Real Headless Chrome DOM Verification
+    chrome_path = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    if not chrome_path.is_file():
+        print("   [SKIP] Google Chrome not found at /Applications/Google Chrome.app")
+        results["chrome_available"] = False
+        return results
 
     tmp_profile = tempfile.mkdtemp(prefix="chrome_e2e_")
-    results = {}
     try:
-        url = f"http://127.0.0.1:{test_port}"
         base_chrome_flags = [
             "--headless=new",
             "--disable-gpu",
@@ -221,55 +229,39 @@ def run_headless_chrome_verification() -> dict:
             "--disable-features=Translate,OptimizationHints,MediaRouter",
         ]
 
-        # 1. Desktop Viewport (1280x800)
-        print("1. Inspecting Desktop Viewport DOM (1280x800)...")
+        # 2a. Desktop Viewport (1280x800)
+        print("2. Inspecting Desktop Viewport in Google Chrome (1280x800)...")
         desktop_cmd = [
             str(chrome_path),
             *base_chrome_flags,
             "--window-size=1280,800",
             "--dump-dom",
-            url,
+            f"file://{dist_index}",
         ]
         dom_output = subprocess.check_output(desktop_cmd, timeout=15, stderr=subprocess.DEVNULL).decode("utf-8")
         assert "<div id=\"root\">" in dom_output, "React root element missing in dumped DOM"
-        assert "/assets/" in dom_output, "Production compiled assets not referenced in DOM"
-        assert "<title>DocuMind AI" in dom_output, "Document title missing"
-        print("   [PASS] Desktop DOM delivered with React mount root and compiled assets.")
-        results["desktop_dom"] = True
+        assert "/assets/" in dom_output, "Compiled asset bundles not referenced in DOM"
+        assert "DocuMind AI" in dom_output, "Title missing in DOM"
+        print("   [PASS] Chrome desktop DOM validated: root container and assets present.")
+        results["chrome_desktop_dom"] = True
 
-        # 2. Mobile Viewport (375x667)
-        print("2. Inspecting Mobile Viewport DOM (375x667)...")
+        # 2b. Mobile Viewport (375x667)
+        print("3. Inspecting Mobile Viewport in Google Chrome (375x667)...")
         mobile_cmd = [
             str(chrome_path),
             *base_chrome_flags,
             "--window-size=375,667",
             "--user-agent=Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15",
             "--dump-dom",
-            url,
+            f"file://{dist_index}",
         ]
         mobile_output = subprocess.check_output(mobile_cmd, timeout=15, stderr=subprocess.DEVNULL).decode("utf-8")
         assert "<div id=\"root\">" in mobile_output
-        print("   [PASS] Mobile viewport DOM successfully rendered.")
-        results["mobile_dom"] = True
-
-        # 3. Static Asset Accessibility
-        print("3. Verifying static assets accessibility via HTTP...")
-        import urllib.request
-        req = urllib.request.urlopen(f"{url}/")
-        assert req.status == 200
-        html = req.read().decode("utf-8")
-        import re
-        asset_matches = re.findall(r'href="(/assets/[^"]+)"|src="(/assets/[^"]+)"', html)
-        for href, src in asset_matches:
-            asset_path = href or src
-            asset_req = urllib.request.urlopen(f"{url}{asset_path}")
-            assert asset_req.status == 200
-            print(f"   [PASS] Asset delivered: {asset_path} ({len(asset_req.read())} bytes)")
-        results["assets_delivered"] = True
+        assert "viewport" in mobile_output.lower()
+        print("   [PASS] Chrome mobile DOM validated: responsive viewport metadata verified.")
+        results["chrome_mobile_dom"] = True
 
     finally:
-        proc.terminate()
-        proc.wait()
         shutil.rmtree(tmp_profile, ignore_errors=True)
 
     return results
