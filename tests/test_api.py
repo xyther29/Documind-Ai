@@ -1,5 +1,6 @@
 """Integration tests for FastAPI application endpoints."""
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -442,3 +443,81 @@ def test_ask_endpoint_all_documents_scope_without_doc_id(test_client, make_pdf):
     data_b = ask_resp_b.json()
     assert len(data_b["sources"]) >= 1
     assert data_b["sources"][0]["filename"] == "biology.pdf"
+
+
+def test_lifespan_http_client_initialization_and_cleanup():
+    """Verify reusable HTTP client is configured on lifespan startup and closed on shutdown."""
+    app = create_app(store=InMemoryDocumentStore())
+    with TestClient(app) as client:
+        # Check that http_client is attached and reusable
+        assert hasattr(client.app.state, "http_client")
+        active_client = client.app.state.http_client
+        assert isinstance(active_client, httpx.AsyncClient)
+        assert client.app.state.qa_service._async_client is active_client
+        assert active_client.is_closed is False
+
+    # After exiting the with-block, lifespan cleanup must have executed
+    assert active_client.is_closed is True
+
+
+def test_create_app_instance_isolation(make_pdf):
+    """Verify complete isolation between separate create_app instances."""
+    store1 = InMemoryDocumentStore()
+    store2 = InMemoryDocumentStore()
+    app1 = create_app(store=store1)
+    app2 = create_app(store=store2)
+
+    assert app1.state.store is not app2.state.store
+    assert app1.state.retriever is not app2.state.retriever
+    assert app1.state.qa_service is not app2.state.qa_service
+
+    client1 = TestClient(app1)
+    client2 = TestClient(app2)
+
+    pdf = make_pdf(["Document in store one only."])
+    resp1 = client1.post("/api/documents/upload", files={"file": ("doc1.pdf", pdf, "application/pdf")})
+    assert resp1.status_code == 201
+
+    # Store 1 has document, store 2 remains pristine
+    assert client1.get("/api/health").json()["documents_count"] == 1
+    assert client2.get("/api/health").json()["documents_count"] == 0
+
+
+def test_ask_endpoint_async_client_production_path(make_pdf):
+    """Verify /api/documents/ask uses injected AsyncClient without blocking event loop."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_async_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"text": "Photosynthesis converts solar energy into glucose [botany.pdf, p. 1]."}
+                    ]
+                }
+            }
+        ]
+    }
+    mock_async_client.post.return_value = mock_response
+
+    store = InMemoryDocumentStore()
+    settings = Settings(gemini_api_key="valid-test-key")
+    app = create_app(store=store, settings=settings, async_client=mock_async_client)
+    client = TestClient(app)
+
+    pdf = make_pdf(["Photosynthesis converts solar energy into glucose."])
+    upload_resp = client.post("/api/documents/upload", files={"file": ("botany.pdf", pdf, "application/pdf")})
+    assert upload_resp.status_code == 201
+
+    ask_resp = client.post(
+        "/api/documents/ask",
+        json={"question": "How does photosynthesis produce glucose?"},
+    )
+    assert ask_resp.status_code == 200
+    data = ask_resp.json()
+    assert "Photosynthesis converts solar energy into glucose" in data["answer"]
+    assert data["fallback_used"] is False
+    assert mock_async_client.post.await_count == 1

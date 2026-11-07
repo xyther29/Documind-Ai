@@ -1,12 +1,14 @@
-"""TF-IDF and cosine-similarity retrieval service with acronym-aware query expansion."""
+"""TF-IDF and cosine-similarity retrieval service with acronym-aware query expansion and precomputed index caching."""
 
+from dataclasses import dataclass
 import re
-from typing import Optional
+import threading
+from typing import Any, Optional
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from app.config import get_settings
-from app.models.schemas import SearchResult
+from app.models.schemas import Chunk, SearchResult
 from app.services.storage_service import InMemoryDocumentStore
 
 DEFAULT_ACRONYM_MAP: dict[str, str] = {
@@ -97,8 +99,19 @@ def expand_query(query: str, corpus_acronyms: Optional[dict[str, str]] = None) -
     return query
 
 
+@dataclass
+class PrecomputedIndex:
+    """Precomputed TF-IDF index and metadata for a corpus snapshot."""
+
+    store_version: int
+    vectorizer: Optional[TfidfVectorizer]
+    chunk_matrix: Any
+    chunks: list[Chunk]
+    discovered_acronyms: dict[str, str]
+
+
 class TfidfRetriever:
-    """TF-IDF retrieval engine over in-memory document chunks."""
+    """TF-IDF retrieval engine over in-memory document chunks with precomputed index caching."""
 
     def __init__(
         self,
@@ -106,12 +119,79 @@ class TfidfRetriever:
         default_top_k: Optional[int] = None,
     ) -> None:
         self.store = store
+        self._lock = threading.Lock()
+        self._cache: dict[Optional[str], PrecomputedIndex] = {}
         # Use configured default_top_k from Settings rather than a hardcoded duplicate
         self.default_top_k = (
             default_top_k
             if default_top_k is not None
             else get_settings().default_top_k
         )
+
+    def clear_cache(self) -> None:
+        """Explicitly clear the precomputed index cache."""
+        with self._lock:
+            self._cache.clear()
+
+    def _get_or_build_index(self, doc_id: Optional[str]) -> Optional[PrecomputedIndex]:
+        """Retrieve precomputed index from cache or build outside locks if store mutated.
+
+        Atomically snapshots chunks and version under store's lock, fits vectorizer
+        outside any lock to avoid blocking readers, and verifies version before publishing.
+        """
+        # 1. Atomic snapshot of chunks and store version
+        chunks, snapshot_version = self.store.get_snapshot(doc_id=doc_id)
+        if not chunks:
+            return None
+
+        # 2. Check cache under retriever lock
+        with self._lock:
+            cached = self._cache.get(doc_id)
+            if cached is not None and cached.store_version == snapshot_version:
+                return cached
+
+        # 3. Fit vectorizer outside locks
+        chunk_texts = [c.text for c in chunks]
+        discovered_acronyms: dict[str, str] = {}
+        for text in chunk_texts:
+            discovered_acronyms.update(extract_acronyms_from_text(text))
+
+        vectorizer = TfidfVectorizer(
+            stop_words="english",
+            lowercase=True,
+            norm="l2",
+            sublinear_tf=True,
+            ngram_range=(1, 2),
+        )
+
+        try:
+            chunk_matrix = vectorizer.fit_transform(chunk_texts)
+        except ValueError as exc:
+            if "empty vocabulary" in str(exc).lower():
+                index = PrecomputedIndex(
+                    store_version=snapshot_version,
+                    vectorizer=None,
+                    chunk_matrix=None,
+                    chunks=chunks,
+                    discovered_acronyms={},
+                )
+            else:
+                raise
+        else:
+            index = PrecomputedIndex(
+                store_version=snapshot_version,
+                vectorizer=vectorizer,
+                chunk_matrix=chunk_matrix,
+                chunks=chunks,
+                discovered_acronyms=discovered_acronyms,
+            )
+
+        # 4. Verify version has not drifted before publishing to cache
+        if self.store.version == snapshot_version:
+            with self._lock:
+                self._cache[doc_id] = index
+
+        return index
 
     def search(
         self,
@@ -147,59 +227,28 @@ class TfidfRetriever:
         if not cleaned_query:
             return []
 
-        # 2. Retrieve chunks from storage (optionally filtered by doc_id)
-        chunks = self.store.get_chunks(doc_id=doc_id)
-        if not chunks:
+        # 2. Retrieve or build precomputed index
+        index = self._get_or_build_index(doc_id=doc_id)
+        if index is None or index.vectorizer is None or index.chunk_matrix is None:
             return []
 
-        chunk_texts = [c.text for c in chunks]
-
-        # Discover dynamic acronyms defined across indexed chunks
-        discovered_acronyms: dict[str, str] = {}
-        for text in chunk_texts:
-            discovered_acronyms.update(extract_acronyms_from_text(text))
-
-        # Expand query using curated and dynamically discovered acronyms
-        effective_query = expand_query(cleaned_query, corpus_acronyms=discovered_acronyms)
-
-        # 3. Fit TF-IDF Vectorizer with sublinear term-frequency scaling and (1, 2) n-grams
-        vectorizer = TfidfVectorizer(
-            stop_words="english",
-            lowercase=True,
-            norm="l2",
-            sublinear_tf=True,
-            ngram_range=(1, 2),
-        )
-
-        try:
-            chunk_matrix = vectorizer.fit_transform(chunk_texts)
-        except ValueError as exc:
-            # Catch ONLY expected empty vocabulary error (e.g. all stop words or symbols in corpus)
-            # Re-raise any unrelated ValueError or programming error
-            if "empty vocabulary" in str(exc).lower():
-                return []
-            raise
+        # 3. Expand query using curated and dynamically discovered acronyms
+        effective_query = expand_query(cleaned_query, corpus_acronyms=index.discovered_acronyms)
 
         # 4. Transform query vector
-        query_vector = vectorizer.transform([effective_query])
+        query_vector = index.vectorizer.transform([effective_query])
 
         # If query contains no vocabulary words recognized by the vectorizer, norm is 0
         if query_vector.nnz == 0:
             return []
 
-        # 5. Compute cosine similarity
-        similarity_scores = cosine_similarity(query_vector, chunk_matrix)[0]
+        # 5. Compute cosine similarity against precomputed chunk matrix
+        similarity_scores = cosine_similarity(query_vector, index.chunk_matrix)[0]
 
         # 6. Candidate selection and ranking
-        # NOTE on score > 0.0:
-        # In non-negative TF-IDF vector space, cosine similarity ranges strictly between 0.0 and 1.0.
-        # A score > 0.0 indicates that at least one non-stopword query token matched the chunk.
-        # This rule serves strictly as a lexical-overlap filter to exclude completely unmentioned
-        # passages; it is NOT a guarantee of true semantic relevance.
         candidates: list[tuple[float, str, int]] = []
-        for idx, (score, chunk) in enumerate(zip(similarity_scores, chunks)):
+        for idx, (score, chunk) in enumerate(zip(similarity_scores, index.chunks)):
             if score > 0.0:
-                # Store (score, chunk_id, idx) for sorting
                 candidates.append((float(score), chunk.chunk_id, idx))
 
         if not candidates:
@@ -212,7 +261,7 @@ class TfidfRetriever:
         # 7. Build validated SearchResult objects preserving exact citation metadata
         results: list[SearchResult] = []
         for score, _, idx in candidates[:effective_top_k]:
-            source_chunk = chunks[idx]
+            source_chunk = index.chunks[idx]
             results.append(
                 SearchResult(
                     chunk_id=source_chunk.chunk_id,

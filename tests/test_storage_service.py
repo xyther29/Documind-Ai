@@ -150,3 +150,71 @@ def test_clear_store():
     assert store.document_count == 0
     assert store.chunk_count == 0
     assert store.list_documents() == []
+
+
+def test_store_versioning_and_snapshot():
+    """Verify that version increments on every mutation and snapshot captures atomic state."""
+    store = InMemoryDocumentStore()
+    assert store.version == 0
+
+    chunks, version = store.get_snapshot()
+    assert chunks == []
+    assert version == 0
+
+    # Add document increments version
+    doc1 = _make_sample_doc("d1")
+    c1 = _make_sample_chunk("d1", "c1")
+    store.add_document(doc1, [c1])
+    assert store.version == 1
+
+    chunks, version = store.get_snapshot("d1")
+    assert len(chunks) == 1
+    assert version == 1
+
+    # Delete document increments version
+    store.delete_document("d1")
+    assert store.version == 2
+
+    # Clear increments version
+    store.clear()
+    assert store.version == 3
+
+
+def test_concurrent_store_access():
+    """Verify thread-safety and no RuntimeError under concurrent reads, writes, and deletions."""
+    import concurrent.futures
+
+    store = InMemoryDocumentStore()
+    errors = []
+
+    def writer_task(i: int):
+        try:
+            doc = _make_sample_doc(f"doc-{i}")
+            chunk = _make_sample_chunk(f"doc-{i}", f"chunk-{i}")
+            store.add_document(doc, [chunk])
+            # Interleaved read
+            _ = store.get_snapshot(f"doc-{i}")
+            _ = store.list_documents()
+            if i % 2 == 0:
+                store.delete_document(f"doc-{i}")
+        except Exception as exc:
+            errors.append(exc)
+
+    def reader_task():
+        try:
+            for _ in range(20):
+                _ = store.list_documents()
+                _ = store.get_chunks()
+                _ = store.document_count
+                _ = store.chunk_count
+                _ = store.get_snapshot()
+        except Exception as exc:
+            errors.append(exc)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(writer_task, i) for i in range(50)]
+        futures.extend([executor.submit(reader_task) for _ in range(10)])
+        concurrent.futures.wait(futures)
+
+    assert errors == [], f"Concurrent access generated errors: {errors}"
+

@@ -1,6 +1,6 @@
 /**
  * DocuMind AI — Frontend Application Logic
- * Plain Vanilla JavaScript implementation.
+ * Professional, accessible Vanilla JavaScript implementation.
  */
 
 (function () {
@@ -125,7 +125,7 @@
       const data = await resp.json();
       state.documents = data.documents || [];
 
-      // If currently selected document was deleted outside our state, reset scope
+      // If currently selected document was deleted, reset scope
       if (state.selectedDocId && !state.documents.some((d) => d.doc_id === state.selectedDocId)) {
         state.selectedDocId = null;
       }
@@ -137,8 +137,8 @@
     }
   }
 
-  async function uploadFile(file) {
-    if (!file) return;
+  function uploadFile(file) {
+    if (!file || state.isUploading) return;
 
     // Client-side extension validation
     const lowerName = file.name.toLowerCase();
@@ -156,45 +156,133 @@
 
     state.isUploading = true;
     elements.browseBtn.disabled = true;
-    elements.uploadStatus.className = "status-message";
-    elements.uploadStatus.textContent = "Uploading and chunking document...";
+    elements.dropZone.setAttribute("aria-busy", "true");
+
+    // Initial upload UI with honest progress bar
+    elements.uploadStatus.className = "status-message uploading";
+    elements.uploadStatus.innerHTML = `
+      <div class="upload-progress-card">
+        <div class="upload-progress-info">
+          <span class="upload-filename" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
+          <span class="upload-pct" id="upload-pct-label">0%</span>
+        </div>
+        <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="upload-progress-track">
+          <div class="progress-bar-fill" id="upload-progress-fill" style="width: 0%;"></div>
+        </div>
+        <div class="upload-phase-text" id="upload-phase-text">Uploading (${formatBytes(file.size)})...</div>
+      </div>
+    `;
 
     const formData = new FormData();
     formData.append("file", file);
 
-    try {
-      const resp = await fetch("/api/documents/upload", {
-        method: "POST",
-        body: formData,
-      });
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/documents/upload");
 
-      if (!resp.ok) {
-        let errorMsg = `Upload failed with status ${resp.status}`;
-        try {
-          const errData = await resp.json();
-          if (errData && errData.detail) errorMsg = errData.detail;
-        } catch (_) {}
-        throw new Error(errorMsg);
+    xhr.upload.addEventListener("progress", (evt) => {
+      if (evt.lengthComputable && evt.total > 0) {
+        const pct = Math.min(100, Math.round((evt.loaded / evt.total) * 100));
+        const fillEl = document.getElementById("upload-progress-fill");
+        const pctEl = document.getElementById("upload-pct-label");
+        const trackEl = document.getElementById("upload-progress-track");
+        const phaseEl = document.getElementById("upload-phase-text");
+
+        if (fillEl) fillEl.style.width = pct + "%";
+        if (trackEl) trackEl.setAttribute("aria-valuenow", String(pct));
+        if (pctEl) pctEl.textContent = pct + "%";
+
+        if (pct < 100) {
+          if (phaseEl) phaseEl.textContent = `Uploading ${formatBytes(evt.loaded)} of ${formatBytes(evt.total)}...`;
+        } else {
+          // Transfer complete, now processing text and chunking on server
+          if (phaseEl) phaseEl.textContent = "Upload complete. Extracting text & chunking on server...";
+          if (trackEl) trackEl.classList.add("progress-indeterminate");
+        }
       }
+    });
 
-      const uploadedDoc = await resp.json();
-      elements.uploadStatus.textContent = "Document uploaded successfully.";
-      setTimeout(() => {
-        elements.uploadStatus.textContent = "";
-      }, 3500);
+    xhr.upload.addEventListener("load", () => {
+      const phaseEl = document.getElementById("upload-phase-text");
+      const trackEl = document.getElementById("upload-progress-track");
+      if (phaseEl) phaseEl.textContent = "Upload complete. Extracting text & chunking on server...";
+      if (trackEl) trackEl.classList.add("progress-indeterminate");
+    });
 
-      // Select newly uploaded document
-      state.selectedDocId = uploadedDoc.doc_id;
-      await fetchDocuments();
-    } catch (err) {
-      elements.uploadStatus.className = "status-message error";
-      elements.uploadStatus.textContent = "Upload failed.";
-      showAlert("Upload error: " + err.message);
-    } finally {
+    xhr.onreadystatechange = async function () {
+      if (xhr.readyState !== XMLHttpRequest.DONE) return;
+
       state.isUploading = false;
       elements.browseBtn.disabled = false;
+      elements.dropZone.removeAttribute("aria-busy");
       elements.pdfInput.value = "";
-    }
+
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const uploadedDoc = JSON.parse(xhr.responseText);
+          elements.uploadStatus.className = "status-message success";
+          elements.uploadStatus.innerHTML = `
+            <div class="upload-feedback-card upload-success-card">
+              <span class="feedback-icon" aria-hidden="true">✓</span>
+              <div class="feedback-content">
+                <strong>${escapeHtml(uploadedDoc.filename)}</strong>
+                <div class="feedback-sub">${uploadedDoc.page_count} page${uploadedDoc.page_count === 1 ? "" : "s"} · ${uploadedDoc.chunk_count} chunk${uploadedDoc.chunk_count === 1 ? "" : "s"} created</div>
+              </div>
+            </div>
+          `;
+          setTimeout(() => {
+            if (elements.uploadStatus.classList.contains("success")) {
+              elements.uploadStatus.innerHTML = "";
+              elements.uploadStatus.className = "status-message";
+            }
+          }, 4500);
+
+          // Select newly uploaded document
+          state.selectedDocId = uploadedDoc.doc_id;
+          await fetchDocuments();
+        } catch (_) {
+          elements.uploadStatus.className = "status-message error";
+          elements.uploadStatus.textContent = "Upload succeeded but failed to parse response.";
+          showAlert("Upload response parse error.");
+        }
+      } else {
+        let errorMsg = `Upload failed with status ${xhr.status}`;
+        try {
+          const errData = JSON.parse(xhr.responseText);
+          if (errData && errData.detail) errorMsg = errData.detail;
+        } catch (_) {}
+        elements.uploadStatus.className = "status-message error";
+        elements.uploadStatus.innerHTML = `
+          <div class="upload-feedback-card upload-error-card">
+            <span class="feedback-icon" aria-hidden="true">!</span>
+            <div class="feedback-content">
+              <strong>Upload failed</strong>
+              <div class="feedback-sub">${escapeHtml(errorMsg)}</div>
+            </div>
+          </div>
+        `;
+        showAlert("Upload error: " + errorMsg);
+      }
+    };
+
+    xhr.onerror = function () {
+      state.isUploading = false;
+      elements.browseBtn.disabled = false;
+      elements.dropZone.removeAttribute("aria-busy");
+      elements.pdfInput.value = "";
+      elements.uploadStatus.className = "status-message error";
+      elements.uploadStatus.innerHTML = `
+        <div class="upload-feedback-card upload-error-card">
+          <span class="feedback-icon" aria-hidden="true">!</span>
+          <div class="feedback-content">
+            <strong>Network error</strong>
+            <div class="feedback-sub">Server unreachable. Check backend connection.</div>
+          </div>
+        </div>
+      `;
+      showAlert("Upload failed: network error or server unreachable.");
+    };
+
+    xhr.send(formData);
   }
 
   async function deleteDocument(docId, filename) {
@@ -226,10 +314,11 @@
   }
 
   async function askQuestion(question, topK) {
-    if (!question || !question.trim()) return;
+    if (!question || !question.trim() || state.isAsking) return;
 
     state.isAsking = true;
     elements.askBtn.disabled = true;
+    elements.questionInput.disabled = true;
     elements.askStatus.textContent = "Searching document passages and synthesizing answer...";
 
     // Hide welcome card if present
@@ -247,9 +336,9 @@
       payload.doc_id = state.selectedDocId;
     }
 
-    // Append Question message immediately to chat stream
+    // Append Question message immediately to chat stream with entrance animation
     const entryEl = document.createElement("div");
-    entryEl.className = "qa-entry";
+    entryEl.className = "qa-entry qa-entry-animated";
     entryEl.innerHTML = `
       <div class="question-block">
         <div class="block-label">Question</div>
@@ -258,8 +347,15 @@
       <div class="answer-block loading-state">
         <div class="answer-header-row">
           <span class="block-label">Answer</span>
+          <span class="searching-pulse-tag">
+            <span class="pulse-dot" aria-hidden="true"></span>
+            <span>Searching...</span>
+          </span>
         </div>
-        <div class="answer-body">Retrieving relevant passages and synthesizing response...</div>
+        <div class="answer-loading-indicator">
+          <div class="loading-progress-line" role="progressbar" aria-label="Synthesizing answer"></div>
+          <p class="answer-loading-text">Searching document passages and synthesizing response...</p>
+        </div>
       </div>
     `;
     elements.chatStream.appendChild(entryEl);
@@ -284,11 +380,13 @@
       const askData = await resp.json();
       renderAnswerEntry(entryEl, askData);
     } catch (err) {
-      entryEl.querySelector(".answer-block").innerHTML = `
+      const answerBlock = entryEl.querySelector(".answer-block");
+      answerBlock.className = "answer-block";
+      answerBlock.innerHTML = `
         <div class="answer-header-row">
-          <span class="block-label">Error</span>
+          <span class="block-label" style="color: var(--color-coral);">Error</span>
         </div>
-        <div class="answer-body" style="color: var(--color-error-text);">
+        <div class="answer-body error-text" style="color: var(--color-coral); font-weight: 500;">
           Failed to retrieve answer: ${escapeHtml(err.message)}
         </div>
       `;
@@ -296,8 +394,10 @@
     } finally {
       state.isAsking = false;
       elements.askBtn.disabled = false;
+      elements.questionInput.disabled = false;
       elements.askStatus.textContent = "";
       elements.questionInput.value = "";
+      elements.questionInput.focus();
       elements.chatStream.scrollTop = elements.chatStream.scrollHeight;
     }
   }
@@ -426,22 +526,22 @@
       const sourceItems = askData.sources
         .map((src, idx) => {
           const passageId = `passage-${Math.random().toString(36).substring(2, 9)}-${idx}`;
-          const scoreText = typeof src.score === "number" ? `<span class="chip-score">Score: ${src.score.toFixed(4)}</span>` : "";
+          const scoreText = typeof src.score === "number" ? `<span class="chip-score" title="Cosine similarity score">Score: ${src.score.toFixed(4)}</span>` : "";
 
           return `
             <div class="source-item">
               <div class="source-header-row">
-                <div>
+                <div class="source-meta-left">
                   <span class="source-citation-badge">[${escapeHtml(src.page_citation)}]</span>
-                  <span class="source-filename">${escapeHtml(src.filename)}</span>
+                  <span class="source-filename" title="${escapeHtml(src.filename)}">${escapeHtml(src.filename)}</span>
                 </div>
-                <div>
-                  <span class="source-score">${scoreText}</span>
+                <div class="source-meta-right">
+                  ${scoreText}
                   <button type="button" class="btn-toggle-passage" data-target="${passageId}" aria-expanded="false">View passage</button>
                 </div>
               </div>
               <div id="${passageId}" class="source-passage-box hidden">
-                ${escapeHtml(src.text)}
+                <div class="source-passage-content">${escapeHtml(src.text)}</div>
               </div>
             </div>
           `;
@@ -450,8 +550,17 @@
 
       sourcesHtml = `
         <div class="sources-section">
-          <div class="sources-title">Retrieved Sources (${askData.sources.length})</div>
+          <div class="sources-title">
+            <span>Retrieved Sources</span>
+            <span class="sources-count-badge">${askData.sources.length}</span>
+          </div>
           <div class="sources-list">${sourceItems}</div>
+        </div>
+      `;
+    } else {
+      sourcesHtml = `
+        <div class="sources-section empty-sources">
+          <span class="sources-empty-note">No source passages retrieved for this query.</span>
         </div>
       `;
     }
@@ -504,7 +613,9 @@
       if (file) uploadFile(file);
     });
 
-    // Drag and Drop
+    // Drag and Drop with counter to prevent dragleave flickering
+    let dragCounter = 0;
+
     elements.dropZone.addEventListener("click", () => {
       elements.pdfInput.click();
     });
@@ -516,17 +627,30 @@
       }
     });
 
-    elements.dropZone.addEventListener("dragover", (evt) => {
+    elements.dropZone.addEventListener("dragenter", (evt) => {
       evt.preventDefault();
+      dragCounter++;
       elements.dropZone.classList.add("dragover");
     });
 
-    elements.dropZone.addEventListener("dragleave", () => {
-      elements.dropZone.classList.remove("dragover");
+    elements.dropZone.addEventListener("dragover", (evt) => {
+      evt.preventDefault();
+      evt.dataTransfer.dropEffect = "copy";
+      elements.dropZone.classList.add("dragover");
+    });
+
+    elements.dropZone.addEventListener("dragleave", (evt) => {
+      evt.preventDefault();
+      dragCounter--;
+      if (dragCounter <= 0) {
+        dragCounter = 0;
+        elements.dropZone.classList.remove("dragover");
+      }
     });
 
     elements.dropZone.addEventListener("drop", (evt) => {
       evt.preventDefault();
+      dragCounter = 0;
       elements.dropZone.classList.remove("dragover");
       const file = evt.dataTransfer.files && evt.dataTransfer.files[0];
       if (file) uploadFile(file);

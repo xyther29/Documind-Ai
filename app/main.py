@@ -1,12 +1,16 @@
 """FastAPI application for DocuMind AI."""
 
+from contextlib import asynccontextmanager
+import inspect
 from pathlib import Path
 from typing import Annotated, Optional
 import uuid
 
+import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from app.config import Settings, get_settings
 from app.models.schemas import (
@@ -53,10 +57,11 @@ def create_app(
     retriever: Optional[TfidfRetriever] = None,
     qa_service: Optional[GeminiQAService] = None,
     settings: Optional[Settings] = None,
+    async_client: Optional[httpx.AsyncClient] = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application instance.
 
-    Allows injecting isolated store, retriever, and QA service instances for testing.
+    Allows injecting isolated store, retriever, QA service, and async client instances for testing.
     """
     app_settings = settings or get_settings()
     app_store = store if store is not None else InMemoryDocumentStore()
@@ -70,11 +75,41 @@ def create_app(
         if qa_service is not None
         else GeminiQAService(settings=app_settings)
     )
+    if async_client is not None:
+        app_qa_service.set_async_client(async_client)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Manage reusable persistent httpx.AsyncClient across the application lifespan
+        client_to_close = None
+        if not getattr(app.state.qa_service, "_async_client", None):
+            managed_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(app.state.settings.gemini_timeout_seconds, connect=5.0),
+                limits=httpx.Limits(
+                    max_keepalive_connections=10,
+                    max_connections=20,
+                    keepalive_expiry=30.0,
+                ),
+            )
+            app.state.qa_service.set_async_client(managed_client)
+            client_to_close = managed_client
+            app.state.http_client = managed_client
+        else:
+            app.state.http_client = app.state.qa_service._async_client
+
+        try:
+            yield
+        finally:
+            if client_to_close is not None:
+                await client_to_close.aclose()
+            if hasattr(app.state.qa_service, "aclose"):
+                await app.state.qa_service.aclose()
 
     application = FastAPI(
         title="DocuMind AI",
         description="PDF ingestion, retrieval, and document-grounded question answering",
         version="0.1.0",
+        lifespan=lifespan,
     )
 
     # Attach predictable instances to application state
@@ -86,24 +121,44 @@ def create_app(
     # --------------------------------------------------------------------------
     # Frontend Static Files and Root Route
     # --------------------------------------------------------------------------
-    static_dir = Path(__file__).resolve().parent / "static"
-    if static_dir.is_dir():
+    # Legacy / fallback vanilla static assets directory
+    legacy_static_dir = Path(__file__).resolve().parent / "static"
+    if legacy_static_dir.is_dir():
         application.mount(
             "/static",
-            StaticFiles(directory=static_dir),
+            StaticFiles(directory=legacy_static_dir),
             name="static",
+        )
+
+    # Built React production assets directory
+    dist_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    dist_assets_dir = dist_dir / "assets"
+    if dist_assets_dir.is_dir():
+        application.mount(
+            "/assets",
+            StaticFiles(directory=dist_assets_dir),
+            name="assets",
         )
 
     @application.get("/", response_class=FileResponse)
     def serve_frontend() -> FileResponse:
-        """Serve the single-page HTML frontend."""
-        index_file = static_dir / "index.html"
-        if not index_file.is_file():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Frontend index.html not found.",
-            )
-        return FileResponse(index_file, media_type="text/html")
+        """Serve the single-page HTML frontend.
+
+        Prioritizes the compiled React production bundle from frontend/dist/index.html
+        when available, gracefully falling back to the vanilla app/static/index.html.
+        """
+        react_index = dist_dir / "index.html"
+        if react_index.is_file():
+            return FileResponse(react_index, media_type="text/html")
+
+        vanilla_index = legacy_static_dir / "index.html"
+        if vanilla_index.is_file():
+            return FileResponse(vanilla_index, media_type="text/html")
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Frontend index.html not found.",
+        )
 
     # --------------------------------------------------------------------------
     # Health Endpoint
@@ -151,7 +206,7 @@ def create_app(
                 total_bytes += len(chunk)
                 if total_bytes > active_settings.max_file_size_bytes:
                     raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                         detail=(
                             f"File exceeds maximum allowed limit of "
                             f"{active_settings.max_file_size_bytes} bytes."
@@ -163,16 +218,17 @@ def create_app(
 
         file_bytes = b"".join(chunks_data)
 
-        # Validate and extract pages
+        # Offload CPU-bound PDF extraction to threadpool to keep event loop responsive
         try:
-            pages = extract_pdf_pages(
+            pages = await run_in_threadpool(
+                extract_pdf_pages,
                 file_bytes=file_bytes,
                 filename=filename,
                 max_size_bytes=active_settings.max_file_size_bytes,
             )
         except PDFSizeLimitExceededError as err:
             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail=str(err),
             ) from err
         except (InvalidPDFError, NoExtractableTextError) as err:
@@ -181,9 +237,10 @@ def create_app(
                 detail=str(err),
             ) from err
 
-        # Generate unique document ID and chunk pages
+        # Generate unique document ID and offload chunking to threadpool
         doc_id = str(uuid.uuid4())
-        doc_chunks = chunk_document_pages(
+        doc_chunks = await run_in_threadpool(
+            chunk_document_pages,
             doc_id=doc_id,
             filename=filename,
             pages=pages,
@@ -271,7 +328,7 @@ def create_app(
     # Document Question Answering (Ask) Endpoint
     # --------------------------------------------------------------------------
     @application.post("/api/documents/ask", response_model=AskResponse)
-    def ask_document_question(
+    async def ask_document_question(
         ask_req: AskRequest,
         current_store: Annotated[InMemoryDocumentStore, Depends(get_current_store)],
         current_retriever: Annotated[TfidfRetriever, Depends(get_current_retriever)],
@@ -304,11 +361,36 @@ def create_app(
                 fallback_reason=None,
             )
 
-        # Generate answer via Gemini or safe fallback
-        answer_text, fallback_used, fallback_reason = current_qa.generate_answer(
-            question=ask_req.question,
-            passages=passages,
+        # Determine execution path: support custom mocked generate_answer (from sync tests)
+        # while using asynchronous agenerate_answer for production
+        is_generate_mocked = (
+            getattr(current_qa.generate_answer, "__func__", current_qa.generate_answer)
+            != GeminiQAService.generate_answer
         )
+
+        if is_generate_mocked:
+            res = current_qa.generate_answer(
+                question=ask_req.question,
+                passages=passages,
+            )
+            if inspect.isawaitable(res):
+                answer_text, fallback_used, fallback_reason = await res
+            else:
+                answer_text, fallback_used, fallback_reason = res
+        elif hasattr(current_qa, "agenerate_answer"):
+            answer_text, fallback_used, fallback_reason = await current_qa.agenerate_answer(
+                question=ask_req.question,
+                passages=passages,
+            )
+        else:
+            res = current_qa.generate_answer(
+                question=ask_req.question,
+                passages=passages,
+            )
+            if inspect.isawaitable(res):
+                answer_text, fallback_used, fallback_reason = await res
+            else:
+                answer_text, fallback_used, fallback_reason = res
 
         return AskResponse(
             question=ask_req.question,

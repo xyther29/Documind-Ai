@@ -1,0 +1,133 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R 9 0 R] /Count 3 >>
+endobj
+3 0 obj
+[/PDF /Text]
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /Name /F1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R /Resources << /Font << /F1 4 0 R >> >> >>
+endobj
+6 0 obj
+<< /Length 1226 >>
+stream
+BT
+/F1 12 Tf
+16 TL
+54 730 Td
+(Page 1: Retrieval-Augmented Generation Architecture) Tj T*
+T*
+(Retrieval-Augmented Generation \(RAG\) is an artificial intelligence) Tj T*
+(framework that enhances large language models by dynamically retrieving) Tj T*
+(relevant facts from authoritative external knowledge bases before) Tj T*
+(synthesizing a response.) Tj T*
+T*
+(In standard RAG architectures, knowledge retrieval bridges the gap between) Tj T*
+(static parametric weights learned during pre-training and private, dynamic,) Tj T*
+(or domain-specific enterprise documents.) Tj T*
+T*
+(The document ingestion pipeline executes three primary phases: document) Tj T*
+(text extraction, document chunking into bounded passages, and index) Tj T*
+(construction. Document chunking partitions multi-page PDFs into overlapping) Tj T*
+(word segments, typically targeting 120 words with 30-word overlaps to) Tj T*
+(maintain contextual continuity across chunk boundaries.) Tj T*
+T*
+(By grounding model generation in retrieved passages, RAG systems) Tj T*
+(dramatically mitigate generative hallucinations, provide verifiable) Tj T*
+(page-level audit trails, and eliminate the prohibitive cost of continuous) Tj T*
+(model fine-tuning.) Tj T*
+T*
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 8 0 R /Resources << /Font << /F1 4 0 R >> >> >>
+endobj
+8 0 obj
+<< /Length 1194 >>
+stream
+BT
+/F1 12 Tf
+16 TL
+54 730 Td
+(Page 2: Vector Embeddings and TF-IDF Retrieval) Tj T*
+T*
+(Information retrieval in RAG platforms relies on either dense vector) Tj T*
+(embeddings, sparse lexical retrieval, or hybrid combinations.) Tj T*
+T*
+(Dense retrieval encodes textual passages into high-dimensional continuous) Tj T*
+(vector spaces using neural embedding models. In contrast, sparse lexical) Tj T*
+(retrieval utilizes Term Frequency Inverse Document Frequency \(TF-IDF\) and) Tj T*
+(BM25 algorithms, calculating term importance based on statistical) Tj T*
+(distribution across document chunks.) Tj T*
+T*
+(The TF-IDF retrieval engine scores candidate passages using cosine) Tj T*
+(similarity between the expanded query vector and precomputed chunk vectors.) Tj T*
+(Cosine similarity evaluates the cosine of the angle between two non-zero) Tj T*
+(vectors in inner product space, yielding normalized scores between 0.0 and) Tj T*
+(1.0.) Tj T*
+T*
+(To bridge vocabulary mismatches, acronym-aware query expansion discovers) Tj T*
+(dynamic abbreviations such as NLP \(Natural Language Processing\) and RAG) Tj T*
+(within the corpus, enriching short queries before matrix multiplication.) Tj T*
+T*
+ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 10 0 R /Resources << /Font << /F1 4 0 R >> >> >>
+endobj
+10 0 obj
+<< /Length 1113 >>
+stream
+BT
+/F1 12 Tf
+16 TL
+54 730 Td
+(Page 3: Generation, Citations and Evaluation) Tj T*
+T*
+(During the synthesis phase, retrieved passages are formatted as untrusted) Tj T*
+(reference context inside privileged system prompts, directing the language) Tj T*
+(model to answer strictly based on provided evidence.) Tj T*
+T*
+(DocuMind AI requires answers to cite exact source filenames and page) Tj T*
+(citations, such as [sample_rag_primer.pdf, p. 1], allowing students and) Tj T*
+(evaluators to inspect source evidence immediately.) Tj T*
+T*
+(A critical invariant in trustworthy document Q&A is honest abstention. If) Tj T*
+(the retrieved passages do not contain sufficient evidence to answer the) Tj T*
+(query, the system must return exactly: The document does not contain this) Tj T*
+(information.) Tj T*
+T*
+(Core evaluation metrics for production RAG include Faithfulness) Tj T*
+(\(measuring factual consistency with source passages\), Answer Relevance) Tj T*
+(\(ensuring the response directly addresses the query\), and Context Recall) Tj T*
+(\(measuring whether all necessary information was retrieved\).) Tj T*
+T*
+ET
+endstream
+endobj
+xref
+0 11
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000127 00000 n 
+0000000155 00000 n 
+0000000235 00000 n 
+0000000361 00000 n 
+0000001639 00000 n 
+0000001765 00000 n 
+0000003011 00000 n 
+0000003138 00000 n 
+trailer
+<< /Size 11 /Root 1 0 R >>
+startxref
+4304
+%%EOF

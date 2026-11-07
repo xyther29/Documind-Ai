@@ -348,3 +348,85 @@ def test_expand_query_helper():
     assert expand_query("") == ""
     assert expand_query("   ") == "   "
 
+
+def test_precomputed_index_cache_reuse_and_invalidation():
+    """Verify that TF-IDF index is cached and invalidated on store mutations."""
+    store = _setup_store_with_chunks()
+    retriever = TfidfRetriever(store)
+
+    # Initial search populates the cache
+    _ = retriever.search("machine learning")
+    assert None in retriever._cache
+    first_index = retriever._cache[None]
+    assert first_index.store_version == store.version
+
+    # Subsequent search reuses the exact same precomputed index
+    _ = retriever.search("deep computational algorithms")
+    assert retriever._cache[None] is first_index
+
+    # Adding a document invalidates the cache on next search
+    doc2 = DocumentMeta(
+        doc_id="doc2",
+        filename="bio.pdf",
+        page_count=1,
+        chunk_count=1,
+        file_size_bytes=1000,
+    )
+    store.add_document(doc2, [_create_chunk("doc2", "c3", "Botanical genetics and cellular mitosis.")])
+
+    _ = retriever.search("botanical genetics")
+    new_index = retriever._cache[None]
+    assert new_index is not first_index
+    assert new_index.store_version == store.version
+
+    # Deleting a document invalidates the cache on next search
+    store.delete_document("doc2")
+    _ = retriever.search("machine learning")
+    third_index = retriever._cache[None]
+    assert third_index is not new_index
+    assert third_index.store_version == store.version
+
+
+def test_retrieval_ranking_parity_cached_vs_uncached():
+    """Verify ranking parity between cold (uncached) and warm (cached) retrieval."""
+    store = _setup_store_with_chunks()
+    retriever = TfidfRetriever(store)
+
+    # Cold query
+    cold_results = retriever.search("machine learning artificial intelligence")
+
+    # Warm cached query
+    warm_results = retriever.search("machine learning artificial intelligence")
+
+    assert len(cold_results) == len(warm_results)
+    for c, w in zip(cold_results, warm_results):
+        assert c.chunk_id == w.chunk_id
+        assert c.score == w.score
+        assert c.page_citation == w.page_citation
+        assert c.text == w.text
+
+
+def test_retrieval_benchmark_recorded():
+    """Record performance timings for cold vs warm cached search."""
+    import time
+
+    store = _setup_store_with_chunks()
+    retriever = TfidfRetriever(store)
+
+    # Cold search (includes initial vectorizer fitting)
+    t0 = time.perf_counter()
+    cold_results = retriever.search("artificial intelligence computational algorithms")
+    cold_duration = time.perf_counter() - t0
+
+    # Warm search (precomputed index reuse)
+    t1 = time.perf_counter()
+    warm_results = retriever.search("artificial intelligence computational algorithms")
+    warm_duration = time.perf_counter() - t1
+
+    assert len(cold_results) == len(warm_results)
+    assert warm_duration >= 0.0
+    # Warm duration should generally be faster than or comparable to cold duration
+    # We record timings for benchmarking
+    print(f"\n[BENCHMARK] Cold search: {cold_duration * 1000:.3f}ms | Warm cached: {warm_duration * 1000:.3f}ms")
+
+
