@@ -44,7 +44,9 @@ export const CitationCard: React.FC<CitationCardProps> = ({
   return (
     <div
       id={`citation-${source.chunk_id}`}
-      className={`border rounded bg-surface shadow-subtle overflow-hidden transition-all duration-300 ${
+      data-chunk-id={source.chunk_id}
+      data-page-citation={source.page_citation}
+      className={`border rounded bg-surface shadow-subtle overflow-hidden transition-all duration-300 scroll-mt-6 ${
         isHighlighted
           ? "border-electric ring-2 ring-electric/40 bg-tint shadow-card"
           : "border-border hover:border-border-secondary"
