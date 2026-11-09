@@ -120,6 +120,7 @@ ALTER TABLE public.profiles OWNER TO postgres;
 -- Revoke all default table privileges
 REVOKE ALL ON TABLE public.profiles FROM PUBLIC;
 REVOKE ALL ON TABLE public.profiles FROM anon;
+REVOKE ALL ON TABLE public.profiles FROM authenticated;
 
 -- Grant administrative access to postgres and service_role
 GRANT ALL ON TABLE public.profiles TO postgres, service_role;

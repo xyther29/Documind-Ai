@@ -615,6 +615,12 @@ def test_table_and_function_privileges_and_grants():
         re.IGNORECASE,
     ), "REVOKE ALL ON TABLE public.profiles FROM anon must be specified"
 
+    assert re.search(
+        r"REVOKE\s+ALL\s+ON\s+TABLE\s+public\.profiles\s+FROM\s+authenticated",
+        sql,
+        re.IGNORECASE,
+    ), "REVOKE ALL ON TABLE public.profiles FROM authenticated must be specified"
+
     # Administrative grants
     assert re.search(
         r"GRANT\s+ALL\s+ON\s+TABLE\s+public\.profiles\s+TO\s+postgres,\s*service_role",
@@ -773,23 +779,57 @@ def test_live_authenticated_cannot_update_disallowed_columns(
 
     user_id = synthetic_users(display_name="Column Test")
 
-    # Attempt to update email (must raise permission denied for column)
+    # 1. Verify effective catalog privileges
+    priv_checks = live_db.query("""
+        SELECT 
+            has_table_privilege('authenticated', 'public.profiles', 'UPDATE'),
+            has_column_privilege('authenticated', 'public.profiles', 'email', 'UPDATE'),
+            has_column_privilege('authenticated', 'public.profiles', 'id', 'UPDATE'),
+            has_column_privilege('authenticated', 'public.profiles', 'display_name', 'UPDATE');
+    """)[0]
+    assert priv_checks[0] is False, "has_table_privilege UPDATE for authenticated must be False"
+    assert priv_checks[1] is False, "has_column_privilege email UPDATE for authenticated must be False"
+    assert priv_checks[2] is False, "has_column_privilege id UPDATE for authenticated must be False"
+    assert priv_checks[3] is True, "has_column_privilege display_name UPDATE for authenticated must be True"
+
+    def _assert_sqlstate_42501(exc: Exception):
+        sqlstate = getattr(exc, "sqlstate", getattr(exc, "pgcode", None))
+        if sqlstate is not None:
+            assert sqlstate == "42501", f"Expected SQLSTATE 42501, got {sqlstate}"
+        else:
+            msg = str(exc).lower()
+            assert "permission denied" in msg or "42501" in msg
+
+    # 2. Attempt to update email (must fail specifically with SQLSTATE 42501)
     with pytest.raises(Exception) as exc_info:
         with live_db.authenticated_context(user_id) as cur:
             cur.execute(
                 "UPDATE public.profiles SET email = %s WHERE id = %s;",
                 ("hacked@example.com", str(user_id)),
             )
-    assert "permission denied" in str(exc_info.value).lower() or "42501" in str(exc_info.value)
+    _assert_sqlstate_42501(exc_info.value)
 
-    # Attempt to update id (must raise permission denied for column)
+    # 3. Attempt to update id (must fail specifically with SQLSTATE 42501)
     with pytest.raises(Exception) as exc_info:
         with live_db.authenticated_context(user_id) as cur:
             cur.execute(
                 "UPDATE public.profiles SET id = %s WHERE id = %s;",
                 (str(uuid.uuid4()), str(user_id)),
             )
-    assert "permission denied" in str(exc_info.value).lower() or "42501" in str(exc_info.value)
+    _assert_sqlstate_42501(exc_info.value)
+
+    # 4. Verify display_name update remains permitted under the same authenticated context
+    with live_db.authenticated_context(user_id) as cur:
+        cur.execute(
+            "UPDATE public.profiles SET display_name = %s WHERE id = %s;",
+            ("Permitted Name", str(user_id)),
+        )
+        assert cur.rowcount == 1, "Authenticated user must be permitted to update display_name"
+
+    res = live_db.query("SELECT display_name, email FROM public.profiles WHERE id = %s;", (str(user_id),))
+    assert len(res) == 1
+    assert res[0][0] == "Permitted Name"
+    assert res[0][1] != "hacked@example.com"
 
 
 def test_live_authenticated_cannot_update_other_user_profile(
