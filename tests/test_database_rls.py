@@ -2,17 +2,19 @@
 
 This test module verifies the Milestone 2.2 Phase 2 Supabase auth profiles migration:
 1. Static analysis of migration SQL (idempotency, RLS, column privileges, function security).
-2. Live PostgreSQL / Supabase execution tests (when a live PostgreSQL server is accessible).
+2. Live PostgreSQL / Supabase execution tests (when a live PostgreSQL server is accessible
+   AND explicitly opted into via DOCUMIND_ALLOW_LIVE_DB_TESTS=1).
    Never mocks PostgreSQL permission enforcement.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import json
 import os
+from pathlib import Path
 import re
 import socket
-import subprocess
-from pathlib import Path
 from typing import Any, Generator
 import uuid
 import pytest
@@ -45,11 +47,17 @@ def _detect_postgres_connection_string() -> str | None:
     return None
 
 
+class DatabaseEnvironment:
+    NATIVE_SUPABASE = "native_supabase"
+    PLAIN_POSTGRES = "plain_postgres"
+    UNCERTAIN = "uncertain"
+
+
 class LivePostgresClient:
-    """Minimal database client supporting psycopg, psycopg2, or psql CLI.
+    """Minimal database client supporting psycopg (v3) or psycopg2.
     
     CRITICAL: Does not mock PostgreSQL permission enforcement. Interacts only
-    with genuine PostgreSQL database processes.
+    with genuine PostgreSQL database processes using a persistent connection.
     """
 
     def __init__(self, connection_url: str):
@@ -74,46 +82,73 @@ class LivePostgresClient:
         except ImportError:
             pass
 
-        import shutil
-        if shutil.which("psql"):
-            self._driver = "psql"
-            return
-
         raise RuntimeError(
-            "No PostgreSQL driver found (psycopg or psycopg2) and psql CLI is not installed."
+            "Neither 'psycopg' nor 'psycopg2' is installed in the active environment. "
+            "To run live PostgreSQL integration tests, install psycopg: pip install 'psycopg[binary]'"
         )
 
-    def execute(self, sql: str) -> None:
-        """Execute one or more SQL statements."""
-        if self._driver in ("psycopg", "psycopg2"):
-            with self._conn.cursor() as cur:
+    def execute(self, sql: str, params: tuple | list | None = None) -> None:
+        """Execute one or more SQL statements on the persistent connection."""
+        with self._conn.cursor() as cur:
+            if params is not None:
+                cur.execute(sql, params)
+            else:
                 cur.execute(sql)
-        elif self._driver == "psql":
-            res = subprocess.run(
-                ["psql", self.connection_url, "-v", "ON_ERROR_STOP=1", "-c", sql],
-                capture_output=True,
-                text=True,
-            )
-            if res.returncode != 0:
-                raise RuntimeError(f"psql execution error: {res.stderr}")
 
-    def query(self, sql: str) -> list[tuple[Any, ...]]:
-        """Execute a SELECT query and return tuples."""
-        if self._driver in ("psycopg", "psycopg2"):
-            with self._conn.cursor() as cur:
+    def query(self, sql: str, params: tuple | list | None = None) -> list[tuple[Any, ...]]:
+        """Execute a SELECT query and return tuples using the persistent connection."""
+        with self._conn.cursor() as cur:
+            if params is not None:
+                cur.execute(sql, params)
+            else:
                 cur.execute(sql)
-                return cur.fetchall()
-        elif self._driver == "psql":
-            res = subprocess.run(
-                ["psql", self.connection_url, "-A", "-F", "\t", "-t", "-c", sql],
-                capture_output=True,
-                text=True,
-            )
-            if res.returncode != 0:
-                raise RuntimeError(f"psql query error: {res.stderr}")
-            lines = [line.strip().split("\t") for line in res.stdout.strip().split("\n") if line.strip()]
-            return [tuple(line) for line in lines]
-        return []
+            return cur.fetchall()
+
+    @contextmanager
+    def authenticated_context(self, user_id: uuid.UUID):
+        """Execute block within an isolated transaction configured as ROLE authenticated.
+        
+        Executes BEGIN, SET LOCAL ROLE, set_config, the protected query, and COMMIT/ROLLBACK
+        all on the same persistent connection cursor. Role and settings cannot leak.
+        """
+        assert isinstance(user_id, uuid.UUID), "user_id must be a uuid.UUID instance"
+        with self._conn.cursor() as cur:
+            cur.execute("BEGIN;")
+            try:
+                cur.execute("SET LOCAL ROLE authenticated;")
+                cur.execute("SELECT pg_catalog.set_config('request.jwt.claim.sub', %s, true);", (str(user_id),))
+                yield cur
+                cur.execute("COMMIT;")
+            except Exception:
+                cur.execute("ROLLBACK;")
+                raise
+            finally:
+                try:
+                    cur.execute("RESET ROLE;")
+                except Exception:
+                    pass
+
+    @contextmanager
+    def anon_context(self):
+        """Execute block within an isolated transaction configured as ROLE anon.
+        
+        Executes BEGIN, SET LOCAL ROLE, the query, and COMMIT/ROLLBACK all on the same
+        persistent connection cursor. Role cannot leak.
+        """
+        with self._conn.cursor() as cur:
+            cur.execute("BEGIN;")
+            try:
+                cur.execute("SET LOCAL ROLE anon;")
+                yield cur
+                cur.execute("COMMIT;")
+            except Exception:
+                cur.execute("ROLLBACK;")
+                raise
+            finally:
+                try:
+                    cur.execute("RESET ROLE;")
+                except Exception:
+                    pass
 
     def close(self) -> None:
         if self._conn is not None:
@@ -123,22 +158,168 @@ class LivePostgresClient:
                 pass
 
 
+def detect_database_environment(live_db: LivePostgresClient) -> str:
+    """Classify the database environment using multiple independent indicators.
+    
+    Indicators:
+    1. 'auth' schema exists in information_schema.schemata.
+    2. 'auth.users' table exists in information_schema.tables.
+    3. Standard Supabase roles ('anon', 'authenticated', 'service_role') exist in pg_roles.
+    4. Native 'auth.uid()' function exists in pg_proc.
+    """
+    has_auth_schema = bool(live_db.query("""
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.schemata 
+            WHERE schema_name = 'auth'
+        );
+    """)[0][0])
+
+    has_users_table = bool(live_db.query("""
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables 
+            WHERE table_schema = 'auth' AND table_name = 'users'
+        );
+    """)[0][0])
+
+    role_count = int(live_db.query("""
+        SELECT count(*) FROM pg_roles 
+        WHERE rolname IN ('anon', 'authenticated', 'service_role');
+    """)[0][0])
+    has_supabase_roles = (role_count == 3)
+
+    has_auth_uid = bool(live_db.query("""
+        SELECT EXISTS (
+            SELECT 1 FROM pg_proc p 
+            JOIN pg_namespace n ON p.pronamespace = n.oid 
+            WHERE n.nspname = 'auth' AND p.proname = 'uid'
+        );
+    """)[0][0])
+
+    if has_auth_schema and has_users_table and has_supabase_roles and has_auth_uid:
+        return DatabaseEnvironment.NATIVE_SUPABASE
+
+    if not has_auth_schema and not has_users_table and role_count == 0 and not has_auth_uid:
+        return DatabaseEnvironment.PLAIN_POSTGRES
+
+    return DatabaseEnvironment.UNCERTAIN
+
+
+def _prepare_test_db(live_db: LivePostgresClient) -> None:
+    """Prepare environment for testing without modifying native Supabase auth structures."""
+    env = detect_database_environment(live_db)
+    if env == DatabaseEnvironment.NATIVE_SUPABASE:
+        # Native Supabase: auth schema, auth.users, auth.uid(), and roles exist natively.
+        # Zero bootstrap or modifications on auth schema!
+        return
+    elif env == DatabaseEnvironment.PLAIN_POSTGRES:
+        # Clean stock PostgreSQL: bootstrap minimal mock auth schema and roles for standalone testing.
+        live_db.execute("""
+        CREATE SCHEMA IF NOT EXISTS auth;
+        CREATE TABLE IF NOT EXISTS auth.users (
+            id UUID PRIMARY KEY,
+            email TEXT,
+            raw_user_meta_data JSONB,
+            aud TEXT DEFAULT 'authenticated',
+            role TEXT DEFAULT 'authenticated'
+        );
+        CREATE OR REPLACE FUNCTION auth.uid() RETURNS UUID AS $$
+            SELECT NULLIF(pg_catalog.current_setting('request.jwt.claim.sub', true), '')::uuid;
+        $$ LANGUAGE sql STABLE;
+
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+                CREATE ROLE anon;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+                CREATE ROLE authenticated;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+                CREATE ROLE service_role;
+            END IF;
+        END
+        $$;
+        """)
+    else:
+        raise RuntimeError(
+            "Ambiguous database environment detected: found partial auth schema or roles. "
+            "To prevent accidental schema modification or permission escalation on an unverified "
+            "database, test execution is aborted. Please ensure either a complete local Supabase "
+            "instance or a completely clean stock PostgreSQL database is provided."
+        )
+
+
+def insert_synthetic_user(
+    live_db: LivePostgresClient,
+    user_id: uuid.UUID,
+    email: str,
+    display_name: str | None = None,
+) -> uuid.UUID:
+    """Insert a synthetic user using strict parameterized SQL.
+    
+    Works on both native Supabase auth.users and plain PostgreSQL test schema.
+    """
+    assert isinstance(user_id, uuid.UUID), "user_id must be a uuid.UUID instance"
+    assert "@" in email, "email must be valid email format"
+
+    metadata_json = json.dumps({"display_name": display_name} if display_name is not None else {})
+
+    sql = """
+        INSERT INTO auth.users (id, email, raw_user_meta_data, aud, role)
+        VALUES (%s, %s, %s::jsonb, %s, %s);
+    """
+    live_db.execute(sql, (str(user_id), email, metadata_json, "authenticated", "authenticated"))
+    return user_id
+
+
 @pytest.fixture(scope="module")
 def live_db() -> Generator[LivePostgresClient, None, None]:
-    """Provide a live PostgreSQL client or skip if no database is reachable."""
+    """Provide a live PostgreSQL client or skip if not opted in or unreachable."""
+    # 1. Require explicit live-test opt-in
+    if os.getenv("DOCUMIND_ALLOW_LIVE_DB_TESTS") != "1":
+        pytest.skip(
+            "Live PostgreSQL tests require explicit opt-in via DOCUMIND_ALLOW_LIVE_DB_TESTS=1 "
+            "and are permitted only against disposable local Supabase or plain PostgreSQL databases."
+        )
+
+    # 2. Check connection string
     conn_url = _detect_postgres_connection_string()
     if not conn_url:
         pytest.skip("No running PostgreSQL/Supabase instance detected on localhost or DATABASE_URL not set")
 
+    # 3. Connect via psycopg/psycopg2
     try:
         client = LivePostgresClient(conn_url)
-        # Verify connection by running a simple query
         client.query("SELECT 1;")
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
     except Exception as exc:
-        pytest.skip(f"No running PostgreSQL/Supabase instance detected on localhost or DATABASE_URL not set: {exc}")
+        pytest.skip(f"Could not connect to PostgreSQL at {conn_url}: {exc}")
 
     yield client
     client.close()
+
+
+@pytest.fixture
+def synthetic_users(live_db: LivePostgresClient):
+    """Tracks exact UUIDs created during a test and deletes ONLY those exact records on teardown."""
+    created_ids: set[uuid.UUID] = set()
+
+    def _create(email: str | None = None, display_name: str | None = None) -> uuid.UUID:
+        user_id = uuid.uuid4()
+        user_email = email or f"test_rls_{uuid.uuid4().hex[:8]}@documind.test"
+        insert_synthetic_user(live_db, user_id=user_id, email=user_email, display_name=display_name)
+        created_ids.add(user_id)
+        return user_id
+
+    yield _create
+
+    # Teardown: purge exact tracked UUIDs using privileged connection
+    for uid in created_ids:
+        try:
+            live_db.execute("DELETE FROM auth.users WHERE id = %s;", (str(uid),))
+        except Exception as exc:
+            print(f"[Warning] Failed to clean up synthetic test user {uid}: {exc}")
 
 
 # ============================================================================
@@ -521,39 +702,10 @@ def test_row_level_security_policies():
 
 # ============================================================================
 # 2. Real PostgreSQL / Live Execution Tests
-#    These run only against an active PostgreSQL / Supabase instance.
-#    When no instance is available, they skip gracefully.
+#    These run only against an active PostgreSQL / Supabase instance when
+#    explicitly opted-into via DOCUMIND_ALLOW_LIVE_DB_TESTS=1.
+#    When not opted-in or when no instance is available, they skip gracefully.
 # ============================================================================
-
-def _prepare_test_db(live_db: LivePostgresClient) -> None:
-    """Prepare mock Supabase environment structures if running on plain PostgreSQL."""
-    prep_sql = """
-    CREATE SCHEMA IF NOT EXISTS auth;
-    CREATE TABLE IF NOT EXISTS auth.users (
-        id UUID PRIMARY KEY,
-        email TEXT,
-        raw_user_meta_data JSONB
-    );
-    CREATE OR REPLACE FUNCTION auth.uid() RETURNS UUID AS $$
-        SELECT NULLIF(pg_catalog.current_setting('request.jwt.claim.sub', true), '')::uuid;
-    $$ LANGUAGE sql STABLE;
-
-    DO $$
-    BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-            CREATE ROLE anon;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-            CREATE ROLE authenticated;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
-            CREATE ROLE service_role;
-        END IF;
-    END
-    $$;
-    """
-    live_db.execute(prep_sql)
-
 
 def test_live_migration_application_and_idempotency(live_db: LivePostgresClient):
     """Apply migration to live database and verify running it twice is completely idempotent."""
@@ -580,138 +732,111 @@ def test_live_anon_role_denied_access(live_db: LivePostgresClient):
 
     # Test anon SELECT is denied (42501 permission denied)
     with pytest.raises(Exception) as exc_info:
-        live_db.execute("SET ROLE anon; SELECT * FROM public.profiles; RESET ROLE;")
+        with live_db.anon_context() as cur:
+            cur.execute("SELECT * FROM public.profiles;")
     assert "permission denied" in str(exc_info.value).lower() or "42501" in str(exc_info.value)
-    live_db.execute("RESET ROLE;")
 
     # Test anon UPDATE is denied
     with pytest.raises(Exception) as exc_info:
-        live_db.execute("SET ROLE anon; UPDATE public.profiles SET display_name = 'Hacked'; RESET ROLE;")
+        with live_db.anon_context() as cur:
+            cur.execute("UPDATE public.profiles SET display_name = 'Hacked';")
     assert "permission denied" in str(exc_info.value).lower() or "42501" in str(exc_info.value)
-    live_db.execute("RESET ROLE;")
 
 
-def test_live_authenticated_can_update_own_display_name(live_db: LivePostgresClient):
+def test_live_authenticated_can_update_own_display_name(
+    live_db: LivePostgresClient, synthetic_users
+):
     """Verify authenticated user can update display_name on their own row."""
     _prepare_test_db(live_db)
     live_db.execute(_read_migration_sql())
 
-    user_id = str(uuid.uuid4())
-    user_email = f"user_{uuid.uuid4().hex[:8]}@example.com"
+    user_id = synthetic_users(display_name="Original Name")
 
-    # Insert user in auth.users (trigger provisions public.profiles)
-    live_db.execute(f"""
-        INSERT INTO auth.users (id, email, raw_user_meta_data)
-        VALUES ('{user_id}', '{user_email}', '{{"display_name": "Original Name"}}');
-    """)
+    # Authenticated user updates own display_name within isolated transaction
+    with live_db.authenticated_context(user_id) as cur:
+        cur.execute(
+            "UPDATE public.profiles SET display_name = %s WHERE id = %s;",
+            ("Updated Name", str(user_id)),
+        )
 
-    # Authenticated user updates own display_name
-    live_db.execute(f"""
-        SET ROLE authenticated;
-        SET LOCAL "request.jwt.claim.sub" = '{user_id}';
-        UPDATE public.profiles SET display_name = 'Updated Name' WHERE id = '{user_id}';
-        RESET ROLE;
-    """)
-
-    # Verify update succeeded
-    res = live_db.query(f"SELECT display_name FROM public.profiles WHERE id = '{user_id}';")
+    # Verify update persisted
+    res = live_db.query("SELECT display_name FROM public.profiles WHERE id = %s;", (str(user_id),))
     assert len(res) == 1 and res[0][0] == "Updated Name"
 
 
-def test_live_authenticated_cannot_update_disallowed_columns(live_db: LivePostgresClient):
+def test_live_authenticated_cannot_update_disallowed_columns(
+    live_db: LivePostgresClient, synthetic_users
+):
     """Verify authenticated user receives 42501 error when attempting to update email or id."""
     _prepare_test_db(live_db)
     live_db.execute(_read_migration_sql())
 
-    user_id = str(uuid.uuid4())
-    user_email = f"user_{uuid.uuid4().hex[:8]}@example.com"
-
-    live_db.execute(f"""
-        INSERT INTO auth.users (id, email, raw_user_meta_data)
-        VALUES ('{user_id}', '{user_email}', '{{"display_name": "Column Test"}}');
-    """)
+    user_id = synthetic_users(display_name="Column Test")
 
     # Attempt to update email (must raise permission denied for column)
     with pytest.raises(Exception) as exc_info:
-        live_db.execute(f"""
-            SET ROLE authenticated;
-            SET LOCAL "request.jwt.claim.sub" = '{user_id}';
-            UPDATE public.profiles SET email = 'hacked@example.com' WHERE id = '{user_id}';
-            RESET ROLE;
-        """)
-    live_db.execute("RESET ROLE;")
+        with live_db.authenticated_context(user_id) as cur:
+            cur.execute(
+                "UPDATE public.profiles SET email = %s WHERE id = %s;",
+                ("hacked@example.com", str(user_id)),
+            )
     assert "permission denied" in str(exc_info.value).lower() or "42501" in str(exc_info.value)
 
     # Attempt to update id (must raise permission denied for column)
     with pytest.raises(Exception) as exc_info:
-        live_db.execute(f"""
-            SET ROLE authenticated;
-            SET LOCAL "request.jwt.claim.sub" = '{user_id}';
-            UPDATE public.profiles SET id = '{uuid.uuid4()}' WHERE id = '{user_id}';
-            RESET ROLE;
-        """)
-    live_db.execute("RESET ROLE;")
+        with live_db.authenticated_context(user_id) as cur:
+            cur.execute(
+                "UPDATE public.profiles SET id = %s WHERE id = %s;",
+                (str(uuid.uuid4()), str(user_id)),
+            )
     assert "permission denied" in str(exc_info.value).lower() or "42501" in str(exc_info.value)
 
 
-def test_live_authenticated_cannot_update_other_user_profile(live_db: LivePostgresClient):
+def test_live_authenticated_cannot_update_other_user_profile(
+    live_db: LivePostgresClient, synthetic_users
+):
     """Verify RLS isolates profiles: updating another user's row modifies 0 rows."""
     _prepare_test_db(live_db)
     live_db.execute(_read_migration_sql())
 
-    user1_id = str(uuid.uuid4())
-    user2_id = str(uuid.uuid4())
+    user1_id = synthetic_users(email="user1_isolation@documind.test", display_name="User 1")
+    user2_id = synthetic_users(email="user2_isolation@documind.test", display_name="User 2")
 
-    live_db.execute(f"""
-        INSERT INTO auth.users (id, email, raw_user_meta_data)
-        VALUES ('{user1_id}', 'user1@example.com', '{{"display_name": "User 1"}}');
-        INSERT INTO auth.users (id, email, raw_user_meta_data)
-        VALUES ('{user2_id}', 'user2@example.com', '{{"display_name": "User 2"}}');
-    """)
-
-    # User 1 attempts to update User 2's display_name
-    live_db.execute(f"""
-        SET ROLE authenticated;
-        SET LOCAL "request.jwt.claim.sub" = '{user1_id}';
-        UPDATE public.profiles SET display_name = 'User 2 Pwned' WHERE id = '{user2_id}';
-        RESET ROLE;
-    """)
+    # User 1 attempts to update User 2's display_name within isolated transaction
+    with live_db.authenticated_context(user1_id) as cur:
+        cur.execute(
+            "UPDATE public.profiles SET display_name = %s WHERE id = %s;",
+            ("User 2 Pwned", str(user2_id)),
+        )
+        assert cur.rowcount == 0, "RLS must filter out User 2's row (rowcount must be 0)"
 
     # Verify User 2's profile was untouched
-    res = live_db.query(f"SELECT display_name FROM public.profiles WHERE id = '{user2_id}';")
+    res = live_db.query("SELECT display_name FROM public.profiles WHERE id = %s;", (str(user2_id),))
     assert len(res) == 1 and res[0][0] == "User 2"
 
 
-def test_live_triggers_auto_provision_and_email_sync(live_db: LivePostgresClient):
+def test_live_triggers_auto_provision_and_email_sync(
+    live_db: LivePostgresClient, synthetic_users
+):
     """Verify handle_new_user and handle_user_email_change triggers in action."""
     _prepare_test_db(live_db)
     live_db.execute(_read_migration_sql())
 
     # 1. Trigger on user creation with metadata
-    user_id = str(uuid.uuid4())
-    live_db.execute(f"""
-        INSERT INTO auth.users (id, email, raw_user_meta_data)
-        VALUES ('{user_id}', 'test_meta@example.com', '{{"display_name": "  Custom Name  "}}');
-    """)
-    res = live_db.query(f"SELECT display_name, email FROM public.profiles WHERE id = '{user_id}';")
-    assert len(res) == 1
-    assert res[0][0] == "Custom Name"  # btrim applied
-    assert res[0][1] == "test_meta@example.com"
+    u1_id = synthetic_users(email="test_meta@documind.test", display_name="  Custom Name  ")
+    res1 = live_db.query("SELECT display_name, email FROM public.profiles WHERE id = %s;", (str(u1_id),))
+    assert len(res1) == 1
+    assert res1[0][0] == "Custom Name"  # btrim applied
+    assert res1[0][1] == "test_meta@documind.test"
 
     # 2. Trigger on user creation without metadata (email prefix fallback)
-    user2_id = str(uuid.uuid4())
-    live_db.execute(f"""
-        INSERT INTO auth.users (id, email, raw_user_meta_data)
-        VALUES ('{user2_id}', 'fallback_user@example.com', '{{}}');
-    """)
-    res = live_db.query(f"SELECT display_name FROM public.profiles WHERE id = '{user2_id}';")
-    assert len(res) == 1
-    assert res[0][0] == "fallback_user"
+    u2_id = synthetic_users(email="fallback_user@documind.test", display_name=None)
+    res2 = live_db.query("SELECT display_name FROM public.profiles WHERE id = %s;", (str(u2_id),))
+    assert len(res2) == 1
+    assert res2[0][0] == "fallback_user"
 
     # 3. Trigger on email update
-    live_db.execute(f"""
-        UPDATE auth.users SET email = 'updated_meta@example.com' WHERE id = '{user_id}';
-    """)
-    res = live_db.query(f"SELECT email FROM public.profiles WHERE id = '{user_id}';")
-    assert len(res) == 1
-    assert res[0][0] == "updated_meta@example.com"
+    live_db.execute("UPDATE auth.users SET email = %s WHERE id = %s;", ("updated_meta@documind.test", str(u1_id)))
+    res3 = live_db.query("SELECT email FROM public.profiles WHERE id = %s;", (str(u1_id),))
+    assert len(res3) == 1
+    assert res3[0][0] == "updated_meta@documind.test"
