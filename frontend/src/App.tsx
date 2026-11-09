@@ -7,6 +7,7 @@ import { fetchDocuments, deleteDocument, checkHealth } from "./lib/api";
 import type { DocumentMeta, HealthResponse, QAEntry } from "./types/api";
 
 import { RouterProvider, usePathname } from "./lib/router";
+import { AuthProvider } from "./context/AuthContext";
 import { PublicHeader } from "./components/public/PublicHeader";
 import { PublicFooter } from "./components/public/PublicFooter";
 
@@ -234,9 +235,11 @@ function RouteDispatcher() {
 
 export function App() {
   return (
-    <RouterProvider>
-      <RouteDispatcher />
-    </RouterProvider>
+    <AuthProvider>
+      <RouterProvider>
+        <RouteDispatcher />
+      </RouterProvider>
+    </AuthProvider>
   );
 }
 export default App;

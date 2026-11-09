@@ -20,7 +20,9 @@ from app.models.schemas import (
     SearchRequest,
     SearchResponse,
 )
+from app.routers import auth as auth_router
 from app.services.chunking_service import chunk_document_pages
+from app.services.guest_service import GuestSessionService
 from app.services.pdf_service import (
     InvalidPDFError,
     NoExtractableTextError,
@@ -58,6 +60,7 @@ def create_app(
     qa_service: Optional[GeminiQAService] = None,
     settings: Optional[Settings] = None,
     async_client: Optional[httpx.AsyncClient] = None,
+    guest_service: Optional[GuestSessionService] = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application instance.
 
@@ -77,6 +80,11 @@ def create_app(
     )
     if async_client is not None:
         app_qa_service.set_async_client(async_client)
+    app_guest_service = (
+        guest_service
+        if guest_service is not None
+        else GuestSessionService(settings=app_settings)
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -117,6 +125,10 @@ def create_app(
     application.state.store = app_store
     application.state.retriever = app_retriever
     application.state.qa_service = app_qa_service
+    application.state.guest_service = app_guest_service
+
+    # Include authentication and guest session router
+    application.include_router(auth_router.router)
 
     # --------------------------------------------------------------------------
     # Frontend Static Files and Root Route

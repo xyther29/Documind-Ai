@@ -54,6 +54,13 @@ export interface AskResponse {
   fallback_reason?: string | null;
 }
 
+export interface GuestSessionResponse {
+  guest_token: string;
+  expires_at: string;
+  max_documents: number;
+  max_questions: number;
+}
+
 /**
  * Frontend conversational Q&A entry state.
  */
