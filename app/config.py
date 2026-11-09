@@ -3,7 +3,7 @@
 import os
 from typing import Optional
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Settings(BaseModel):
@@ -20,6 +20,28 @@ class Settings(BaseModel):
     gemini_api_key: Optional[str] = Field(default=None)
     gemini_model: str = Field(default="gemini-3.5-flash-lite")
     gemini_timeout_seconds: float = Field(default=30.0, gt=0.0)
+
+    # Supabase Auth settings
+    supabase_url: Optional[str] = Field(default=None)
+    supabase_anon_key: Optional[str] = Field(default=None)
+    supabase_jwt_secret: Optional[str] = Field(default=None)
+    supabase_jwt_algorithm: str = Field(default="HS256")
+    supabase_jwt_audience: str = Field(default="authenticated")
+    supabase_jwt_issuer: Optional[str] = Field(default=None)
+
+    # Guest session settings
+    guest_session_ttl_minutes: int = Field(default=60, gt=0)
+    guest_max_documents: int = Field(default=1, gt=0)
+    guest_max_questions: int = Field(default=5, gt=0)
+    guest_issuance_rate_limit: int = Field(default=30, gt=0)
+
+    @field_validator("supabase_jwt_algorithm")
+    @classmethod
+    def validate_jwt_algorithm(cls, v: str) -> str:
+        clean = v.strip().upper()
+        if clean not in ("HS256", "RS256"):
+            raise ValueError(f"supabase_jwt_algorithm must be 'HS256' or 'RS256', got: {v}")
+        return clean
 
     @model_validator(mode="after")
     def validate_overlap(self) -> "Settings":
@@ -60,6 +82,16 @@ def get_settings(env_file: Optional[str] = None, **overrides) -> Settings:
         "gemini_api_key": api_key,
         "gemini_model": os.getenv("GEMINI_MODEL"),
         "gemini_timeout_seconds": os.getenv("GEMINI_TIMEOUT_SECONDS"),
+        "supabase_url": os.getenv("SUPABASE_URL"),
+        "supabase_anon_key": os.getenv("SUPABASE_ANON_KEY"),
+        "supabase_jwt_secret": os.getenv("SUPABASE_JWT_SECRET"),
+        "supabase_jwt_algorithm": os.getenv("SUPABASE_JWT_ALGORITHM"),
+        "supabase_jwt_audience": os.getenv("SUPABASE_JWT_AUDIENCE"),
+        "supabase_jwt_issuer": os.getenv("SUPABASE_JWT_ISSUER"),
+        "guest_session_ttl_minutes": os.getenv("GUEST_SESSION_TTL_MINUTES"),
+        "guest_max_documents": os.getenv("GUEST_MAX_DOCUMENTS"),
+        "guest_max_questions": os.getenv("GUEST_MAX_QUESTIONS"),
+        "guest_issuance_rate_limit": os.getenv("GUEST_ISSUANCE_RATE_LIMIT"),
     }
 
     # Filter out None values so Pydantic model defaults apply
