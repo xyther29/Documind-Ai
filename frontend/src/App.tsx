@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { Header } from "./components/Header";
 import { UploadDropZone } from "./components/UploadDropZone";
 import { DocumentLibrary } from "./components/DocumentLibrary";
@@ -6,7 +6,26 @@ import { QAWorkspace } from "./components/QAWorkspace";
 import { fetchDocuments, deleteDocument, checkHealth } from "./lib/api";
 import type { DocumentMeta, HealthResponse, QAEntry } from "./types/api";
 
-export function App() {
+import { RouterProvider, usePathname } from "./lib/router";
+import { PublicHeader } from "./components/public/PublicHeader";
+import { PublicFooter } from "./components/public/PublicFooter";
+
+import { LandingPage } from "./pages/public/LandingPage";
+import { FeaturesPage } from "./pages/public/FeaturesPage";
+import { HowItWorksPage } from "./pages/public/HowItWorksPage";
+import { UseCasesPage } from "./pages/public/UseCasesPage";
+import { AboutPage } from "./pages/public/AboutPage";
+import { ContactPage } from "./pages/public/ContactPage";
+import { PrivacyPage } from "./pages/public/PrivacyPage";
+import { TermsPage } from "./pages/public/TermsPage";
+import { AuthNoticePage } from "./pages/public/AuthNoticePage";
+import { NotFoundPage } from "./pages/public/NotFoundPage";
+
+/**
+ * Interactive Demo Workspace (Single-Document Prototype)
+ * Preserved from Milestone 1.4 baseline under route /app
+ */
+function WorkspaceApp() {
   const [documents, setDocuments] = useState<DocumentMeta[]>([]);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [entries, setEntries] = useState<QAEntry[]>([]);
@@ -78,7 +97,7 @@ export function App() {
 
   return (
     <div className="h-screen flex flex-col bg-canvas text-slateText-primary overflow-hidden">
-      {/* Application Header */}
+      {/* Application Header with Return to Public Site */}
       <Header
         health={health}
         loadingHealth={loadingHealth}
@@ -122,3 +141,102 @@ export function App() {
     </div>
   );
 }
+
+/**
+ * Editorial wrapper for all public marketing pages
+ */
+function PublicLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="min-h-screen flex flex-col bg-canvas text-slateText-primary">
+      <PublicHeader />
+      <main className="flex-1 flex flex-col">{children}</main>
+      <PublicFooter />
+    </div>
+  );
+}
+
+/**
+ * Dynamic route dispatcher matching the URL pathname
+ */
+function RouteDispatcher() {
+  const pathname = usePathname();
+
+  // Interactive prototype workspace
+  if (pathname === "/app" || pathname.startsWith("/app/")) {
+    return <WorkspaceApp />;
+  }
+
+  // Public marketing & documentation routes
+  switch (pathname) {
+    case "/":
+      return (
+        <PublicLayout>
+          <LandingPage />
+        </PublicLayout>
+      );
+    case "/features":
+      return (
+        <PublicLayout>
+          <FeaturesPage />
+        </PublicLayout>
+      );
+    case "/how-it-works":
+      return (
+        <PublicLayout>
+          <HowItWorksPage />
+        </PublicLayout>
+      );
+    case "/use-cases":
+      return (
+        <PublicLayout>
+          <UseCasesPage />
+        </PublicLayout>
+      );
+    case "/about":
+      return (
+        <PublicLayout>
+          <AboutPage />
+        </PublicLayout>
+      );
+    case "/contact":
+      return (
+        <PublicLayout>
+          <ContactPage />
+        </PublicLayout>
+      );
+    case "/privacy":
+      return (
+        <PublicLayout>
+          <PrivacyPage />
+        </PublicLayout>
+      );
+    case "/terms":
+      return (
+        <PublicLayout>
+          <TermsPage />
+        </PublicLayout>
+      );
+    case "/login":
+    case "/signup":
+      return (
+        <PublicLayout>
+          <AuthNoticePage />
+        </PublicLayout>
+      );
+    default:
+      return (
+        <PublicLayout>
+          <NotFoundPage />
+        </PublicLayout>
+      );
+  }
+}
+
+export function App() {
+  return (
+    <RouterProvider>
+      <RouteDispatcher />
+    </RouterProvider>
+  );
+}
+export default App;

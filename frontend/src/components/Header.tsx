@@ -1,5 +1,6 @@
 import React from "react";
-import { BookOpen, RefreshCw, HardDrive } from "lucide-react";
+import { BookOpen, RefreshCw, HardDrive, ArrowLeft } from "lucide-react";
+import { Link } from "../lib/router";
 import type { HealthResponse } from "../types/api";
 
 interface HeaderProps {
@@ -16,16 +17,24 @@ export const Header: React.FC<HeaderProps> = ({
   const isOnline = health?.status === "ok";
 
   return (
-    <header className="h-14 bg-navy border-b border-border flex items-center justify-between px-6 shadow-sm shrink-0 z-20">
+    <header className="h-14 bg-navy border-b border-border flex items-center justify-between px-4 sm:px-6 shadow-sm shrink-0 z-20">
       <div className="flex items-center gap-3">
-        <div className="w-8 h-8 rounded bg-electric flex items-center justify-center text-white shadow-sm">
+        <Link
+          href="/"
+          className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 hover:text-white px-2.5 py-1 rounded bg-white/5 hover:bg-white/10 border border-white/10 transition mr-1 sm:mr-2"
+          title="Return to DocuMind AI Website"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Back to Website</span>
+        </Link>
+        <div className="w-8 h-8 rounded bg-electric flex items-center justify-center text-white shadow-sm shrink-0">
           <BookOpen className="w-5 h-5" />
         </div>
         <div className="flex items-center gap-2.5">
           <span className="text-white font-bold text-base tracking-tight">DocuMind AI</span>
-          <span className="text-white/30 text-sm font-light">|</span>
-          <span className="text-xs uppercase font-semibold tracking-wider text-tint bg-white/10 border border-white/20 px-2 py-0.5 rounded">
-            Student Workspace
+          <span className="text-white/30 text-sm font-light hidden sm:inline">|</span>
+          <span className="text-xs uppercase font-semibold tracking-wider text-tint bg-white/10 border border-white/20 px-2 py-0.5 rounded hidden sm:inline">
+            Interactive Demo Workspace (Single-Document Prototype)
           </span>
         </div>
       </div>
