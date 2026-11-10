@@ -44,6 +44,7 @@ export interface AskRequest {
   question: string;
   doc_id?: string | null;
   top_k?: number;
+  request_id?: string;
 }
 
 export interface AskResponse {

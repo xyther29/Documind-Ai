@@ -332,10 +332,16 @@ export async function deleteDocument(docId: string): Promise<{ message: string; 
  * Ask question using authenticated credentials (Bearer or Guest Session).
  */
 export async function askQuestion(payload: AskRequest): Promise<AskResponse> {
+  const requestId = payload.request_id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : undefined);
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (requestId) {
+    headers["X-Request-Id"] = requestId;
+  }
+  const bodyPayload = requestId && !payload.request_id ? { ...payload, request_id: requestId } : payload;
   const res = await authFetch("/api/documents/ask", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    headers,
+    body: JSON.stringify(bodyPayload),
   });
   if (!res.ok) {
     let detail = `Ask request failed with status ${res.status}`;

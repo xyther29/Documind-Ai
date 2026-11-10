@@ -1,6 +1,9 @@
 """Integration tests for FastAPI application endpoints."""
 
+import time
+import uuid
 import httpx
+import jwt
 import pytest
 from fastapi.testclient import TestClient
 
@@ -8,13 +11,59 @@ from app.config import Settings
 from app.main import create_app
 from app.services.storage_service import InMemoryDocumentStore
 
+API_TEST_SECRET = "test-api-secret-key-32-characters-minimum!"
+API_TEST_SETTINGS = Settings(
+    supabase_jwt_secret=API_TEST_SECRET,
+    supabase_jwt_algorithm="HS256",
+    supabase_jwt_audience="authenticated",
+)
+
+
+def create_test_auth_headers(user_id: str | None = None) -> dict[str, str]:
+    """Helper creating valid Bearer JWT headers for authenticated API tests."""
+    sub = user_id or str(uuid.uuid4())
+    token = jwt.encode(
+        {"sub": sub, "aud": "authenticated", "exp": time.time() + 3600},
+        API_TEST_SECRET,
+        algorithm="HS256",
+    )
+    return {"Authorization": f"Bearer {token}"}
+
 
 @pytest.fixture
 def test_client():
-    """Fixture providing a TestClient with a fresh, isolated in-memory store."""
+    """Fixture providing a TestClient with a fresh store and authenticated user identity."""
     isolated_store = InMemoryDocumentStore()
-    app = create_app(store=isolated_store)
-    return TestClient(app)
+    app = create_app(store=isolated_store, settings=API_TEST_SETTINGS)
+    client = TestClient(app)
+    client.headers.update(create_test_auth_headers())
+    return client
+
+
+def test_document_endpoints_reject_unauthenticated():
+    """Verify that all /api/documents/* endpoints strictly return 401 Unauthorized without credentials."""
+    app = create_app(settings=API_TEST_SETTINGS)
+    unauth_client = TestClient(app)
+
+    # 1. Upload
+    resp_upload = unauth_client.post("/api/documents/upload", files={"file": ("test.pdf", b"%PDF-1.4...", "application/pdf")})
+    assert resp_upload.status_code == 401
+
+    # 2. List
+    resp_list = unauth_client.get("/api/documents")
+    assert resp_list.status_code == 401
+
+    # 3. Delete
+    resp_delete = unauth_client.delete("/api/documents/nonexistent-id")
+    assert resp_delete.status_code == 401
+
+    # 4. Search
+    resp_search = unauth_client.post("/api/documents/search", json={"query": "test"})
+    assert resp_search.status_code == 401
+
+    # 5. Ask
+    resp_ask = unauth_client.post("/api/documents/ask", json={"question": "test question?"})
+    assert resp_ask.status_code == 401
 
 
 def test_health_endpoint(test_client):
@@ -57,9 +106,10 @@ def test_upload_rejects_oversized_file(make_pdf):
     """Verify 413 error when file exceeds configured byte limit."""
     pdf_bytes = make_pdf(["Some PDF text content."])
     # Configure tiny 50 byte max file limit
-    low_limit_settings = Settings(max_file_size_bytes=50)
+    low_limit_settings = Settings(max_file_size_bytes=50, supabase_jwt_secret=API_TEST_SECRET)
     app = create_app(store=InMemoryDocumentStore(), settings=low_limit_settings)
     client = TestClient(app)
+    client.headers.update(create_test_auth_headers())
 
     response = client.post(
         "/api/documents/upload",
@@ -464,15 +514,17 @@ def test_create_app_instance_isolation(make_pdf):
     """Verify complete isolation between separate create_app instances."""
     store1 = InMemoryDocumentStore()
     store2 = InMemoryDocumentStore()
-    app1 = create_app(store=store1)
-    app2 = create_app(store=store2)
+    app1 = create_app(store=store1, settings=API_TEST_SETTINGS)
+    app2 = create_app(store=store2, settings=API_TEST_SETTINGS)
 
     assert app1.state.store is not app2.state.store
     assert app1.state.retriever is not app2.state.retriever
     assert app1.state.qa_service is not app2.state.qa_service
 
     client1 = TestClient(app1)
+    client1.headers.update(create_test_auth_headers())
     client2 = TestClient(app2)
+    client2.headers.update(create_test_auth_headers())
 
     pdf = make_pdf(["Document in store one only."])
     resp1 = client1.post("/api/documents/upload", files={"file": ("doc1.pdf", pdf, "application/pdf")})
@@ -504,9 +556,10 @@ def test_ask_endpoint_async_client_production_path(make_pdf):
     mock_async_client.post.return_value = mock_response
 
     store = InMemoryDocumentStore()
-    settings = Settings(gemini_api_key="valid-test-key")
+    settings = Settings(gemini_api_key="valid-test-key", supabase_jwt_secret=API_TEST_SECRET)
     app = create_app(store=store, settings=settings, async_client=mock_async_client)
     client = TestClient(app)
+    client.headers.update(create_test_auth_headers())
 
     pdf = make_pdf(["Photosynthesis converts solar energy into glucose."])
     upload_resp = client.post("/api/documents/upload", files={"file": ("botany.pdf", pdf, "application/pdf")})

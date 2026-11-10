@@ -58,6 +58,15 @@ def run_api_e2e_journey() -> dict:
         print("   [PASS] Initial health ok. Documents: 0, Chunks: 0")
         results["health_check_initial"] = True
 
+        # 1b. Create guest session for verified demo workflow
+        print("1b. Creating guest session for demo workflow...")
+        guest_resp = client.post("/api/auth/guest-session")
+        assert guest_resp.status_code == 201, f"Guest session creation failed: {guest_resp.text}"
+        guest_token = guest_resp.json()["guest_token"]
+        auth_headers = {"X-Guest-Session": guest_token}
+        client.headers.update(auth_headers)
+        print(f"   [PASS] Guest session issued: {guest_token[:12]}...")
+
         # 2. PDF upload
         print("2. Uploading canonical sample RAG primer PDF...")
         upload_resp = client.post(
@@ -141,8 +150,13 @@ def run_api_e2e_journey() -> dict:
 
         # 7. Unconfigured Gemini fallback
         print("7. Verifying unconfigured API key activates fallback...")
-        unkeyed_app = create_app(store=isolated_store, settings=Settings(gemini_api_key=None))
+        unkeyed_app = create_app(
+            store=app.state.store,
+            settings=Settings(gemini_api_key=None),
+            guest_service=app.state.guest_service,
+        )
         with TestClient(unkeyed_app) as unkeyed_client:
+            unkeyed_client.headers.update(auth_headers)
             fallback_resp = unkeyed_client.post(
                 "/api/documents/ask",
                 json={"question": "What is vector embedding?", "doc_id": doc_id},

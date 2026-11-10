@@ -6,10 +6,15 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.auth import get_current_guest_service
+from app.config import Settings, get_settings
 from app.models.auth_schemas import GuestSessionResponse
-from app.services.guest_service import GuestSessionService
+from app.services.guest_service import GuestSessionService, extract_client_ip
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+def get_current_settings(request: Request) -> Settings:
+    return getattr(request.app.state, "settings", None) or get_settings()
 
 
 @router.post(
@@ -21,19 +26,14 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 def create_guest_session(
     request: Request,
     guest_service: Annotated[GuestSessionService, Depends(get_current_guest_service)],
+    settings: Annotated[Settings, Depends(get_current_settings)],
 ) -> GuestSessionResponse:
     """Issue a new ephemeral guest session token.
     
     The raw guest token is returned strictly once in the response.
-    Enforces per-IP issuance rate limits and default document/question quotas.
+    Enforces per-IP issuance rate limits, active session caps, and default document/question quotas.
     """
-    client_ip = "unknown"
-    if request.client and request.client.host:
-        client_ip = request.client.host
-
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
+    client_ip = extract_client_ip(request, settings)
 
     try:
         session = guest_service.create_guest_session(client_ip=client_ip)

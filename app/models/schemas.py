@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 from typing import Optional
+import uuid
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
@@ -156,6 +157,7 @@ class AskRequest(BaseModel):
     question: str = Field(..., min_length=1)
     doc_id: Optional[str] = None
     top_k: Optional[int] = Field(default=None, gt=0, le=50)
+    request_id: Optional[str] = None
 
     @field_validator("question")
     @classmethod
@@ -164,6 +166,21 @@ class AskRequest(BaseModel):
         stripped = v.strip()
         if not stripped:
             raise ValueError("question cannot be empty or whitespace only")
+        return stripped
+
+    @field_validator("request_id")
+    @classmethod
+    def validate_request_id(cls, v: Optional[str]) -> Optional[str]:
+        """Validate that request_id is a valid UUID string if provided."""
+        if v is None:
+            return None
+        stripped = v.strip()
+        if not stripped:
+            return None
+        try:
+            uuid.UUID(stripped)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"request_id must be a valid UUID string, got: {v}") from exc
         return stripped
 
 

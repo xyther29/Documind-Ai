@@ -34,6 +34,10 @@ class Settings(BaseModel):
     guest_max_documents: int = Field(default=1, gt=0)
     guest_max_questions: int = Field(default=5, gt=0)
     guest_issuance_rate_limit: int = Field(default=30, gt=0)
+    guest_max_active_sessions_per_ip: int = Field(default=10, gt=0)
+    guest_hourly_max_documents: int = Field(default=5, gt=0)
+    guest_hourly_max_questions: int = Field(default=25, gt=0)
+    trusted_proxies: list[str] = Field(default_factory=lambda: ["127.0.0.1", "::1", "testclient"])
 
     @field_validator("supabase_jwt_algorithm")
     @classmethod
@@ -92,6 +96,14 @@ def get_settings(env_file: Optional[str] = None, **overrides) -> Settings:
         "guest_max_documents": os.getenv("GUEST_MAX_DOCUMENTS"),
         "guest_max_questions": os.getenv("GUEST_MAX_QUESTIONS"),
         "guest_issuance_rate_limit": os.getenv("GUEST_ISSUANCE_RATE_LIMIT"),
+        "guest_max_active_sessions_per_ip": os.getenv("GUEST_MAX_ACTIVE_SESSIONS_PER_IP"),
+        "guest_hourly_max_documents": os.getenv("GUEST_HOURLY_MAX_DOCUMENTS"),
+        "guest_hourly_max_questions": os.getenv("GUEST_HOURLY_MAX_QUESTIONS"),
+        "trusted_proxies": (
+            [p.strip() for p in os.getenv("TRUSTED_PROXIES").split(",") if p.strip()]
+            if os.getenv("TRUSTED_PROXIES")
+            else None
+        ),
     }
 
     # Filter out None values so Pydantic model defaults apply

@@ -115,12 +115,12 @@ class TfidfRetriever:
 
     def __init__(
         self,
-        store: InMemoryDocumentStore,
+        store: Any,
         default_top_k: Optional[int] = None,
     ) -> None:
         self.store = store
         self._lock = threading.Lock()
-        self._cache: dict[Optional[str], PrecomputedIndex] = {}
+        self._cache: dict[tuple[str, Optional[str]], PrecomputedIndex] = {}
         # Use configured default_top_k from Settings rather than a hardcoded duplicate
         self.default_top_k = (
             default_top_k
@@ -128,25 +128,41 @@ class TfidfRetriever:
             else get_settings().default_top_k
         )
 
-    def clear_cache(self) -> None:
+    def clear_cache(self, partition_id: Optional[str] = None) -> None:
         """Explicitly clear the precomputed index cache."""
         with self._lock:
-            self._cache.clear()
+            if partition_id is not None:
+                prefix = f"part::{partition_id}"
+                to_delete = [k for k in self._cache.keys() if k[0] == prefix]
+                for k in to_delete:
+                    del self._cache[k]
+            else:
+                self._cache.clear()
 
-    def _get_or_build_index(self, doc_id: Optional[str]) -> Optional[PrecomputedIndex]:
+    def _get_or_build_index(
+        self,
+        doc_id: Optional[str] = None,
+        partition_id: Optional[str] = None,
+    ) -> Optional[PrecomputedIndex]:
         """Retrieve precomputed index from cache or build outside locks if store mutated.
 
         Atomically snapshots chunks and version under store's lock, fits vectorizer
         outside any lock to avoid blocking readers, and verifies version before publishing.
         """
         # 1. Atomic snapshot of chunks and store version
-        chunks, snapshot_version = self.store.get_snapshot(doc_id=doc_id)
+        if partition_id is not None:
+            chunks, snapshot_version = self.store.get_snapshot(partition_id=partition_id, doc_id=doc_id)
+            cache_key = (f"part::{partition_id}", doc_id)
+        else:
+            chunks, snapshot_version = self.store.get_snapshot(doc_id=doc_id)
+            cache_key = doc_id
+
         if not chunks:
             return None
 
         # 2. Check cache under retriever lock
         with self._lock:
-            cached = self._cache.get(doc_id)
+            cached = self._cache.get(cache_key)
             if cached is not None and cached.store_version == snapshot_version:
                 return cached
 
@@ -187,9 +203,15 @@ class TfidfRetriever:
             )
 
         # 4. Verify version has not drifted before publishing to cache
-        if self.store.version == snapshot_version:
+        if hasattr(self.store, "get_partition_store") and partition_id is not None:
+            p_store = self.store.get_partition_store(partition_id, create=False)
+            current_v = p_store.version if p_store else snapshot_version
+        else:
+            current_v = getattr(self.store, "version", snapshot_version)
+
+        if current_v == snapshot_version:
             with self._lock:
-                self._cache[doc_id] = index
+                self._cache[cache_key] = index
 
         return index
 
@@ -198,6 +220,7 @@ class TfidfRetriever:
         query: str,
         doc_id: Optional[str] = None,
         top_k: Optional[int] = None,
+        partition_id: Optional[str] = None,
     ) -> list[SearchResult]:
         """Search in-memory chunks using TF-IDF vectorization and cosine similarity.
 
@@ -205,6 +228,7 @@ class TfidfRetriever:
             query: The user query string.
             doc_id: Optional document ID to restrict search to a single document.
             top_k: Optional number of top results to return (must satisfy 0 < top_k <= 50).
+            partition_id: Optional partition ID to restrict search to a specific user library.
 
         Returns:
             Ranked list of SearchResult schemas with exact page citations and scores.
@@ -228,7 +252,7 @@ class TfidfRetriever:
             return []
 
         # 2. Retrieve or build precomputed index
-        index = self._get_or_build_index(doc_id=doc_id)
+        index = self._get_or_build_index(doc_id=doc_id, partition_id=partition_id)
         if index is None or index.vectorizer is None or index.chunk_matrix is None:
             return []
 
