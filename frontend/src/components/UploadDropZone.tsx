@@ -1,17 +1,19 @@
 import React, { useRef, useState } from "react";
 import { UploadCloud, CheckCircle2, AlertTriangle, Loader2 } from "lucide-react";
-import { uploadDocument, type UploadProgress } from "../lib/api";
+import { uploadDocument, type UploadProgress, type AuthMode } from "../lib/api";
 import { formatBytes } from "../lib/utils";
 import type { DocumentMeta } from "../types/api";
 
 interface UploadDropZoneProps {
   onUploadSuccess: (newDoc: DocumentMeta) => void;
   disabled?: boolean;
+  mode?: AuthMode;
 }
 
 export const UploadDropZone: React.FC<UploadDropZoneProps> = ({
   onUploadSuccess,
   disabled = false,
+  mode,
 }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [activeFile, setActiveFile] = useState<File | null>(null);
@@ -31,9 +33,14 @@ export const UploadDropZone: React.FC<UploadDropZoneProps> = ({
     setActiveFile(file);
 
     try {
-      const uploadedDoc = await uploadDocument(file, (p) => {
-        setProgress(p);
-      });
+      const uploadedDoc = await uploadDocument(
+        file,
+        (p) => {
+          setProgress(p);
+        },
+        0,
+        mode
+      );
 
       setSuccessDoc(uploadedDoc);
       onUploadSuccess(uploadedDoc);

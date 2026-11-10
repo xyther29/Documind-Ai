@@ -37,7 +37,7 @@ export const NotFoundPage: React.FC = () => {
           </Link>
 
           <Link
-            href="/app"
+            href="/demo"
             className="w-full inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg text-xs font-semibold text-slateText-secondary hover:text-navy hover:bg-tint transition cursor-pointer"
           >
             <span>Launch Interactive Demo</span>

@@ -14,6 +14,10 @@ export const isSupabaseConfigured: boolean = Boolean(supabaseUrl && supabaseAnon
 
 /**
  * Singleton Supabase JS client instance when configured; null otherwise.
+ * 
+ * PKCE configuration:
+ * detectSessionInUrl is explicitly false to prevent racing against the authoritative
+ * exchange mechanism in AuthCallbackPage.
  */
 export const supabase: SupabaseClient | null = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey, {
@@ -21,7 +25,7 @@ export const supabase: SupabaseClient | null = isSupabaseConfigured
         flowType: "pkce",
         persistSession: true,
         autoRefreshToken: true,
-        detectSessionInUrl: true,
+        detectSessionInUrl: false,
       },
     })
   : null;

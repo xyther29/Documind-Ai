@@ -1,6 +1,7 @@
 import React, { useState } from "react";
-import { Link, usePathname } from "../../lib/router";
-import { BookOpen, Menu, X, ArrowRight } from "lucide-react";
+import { Link, usePathname, useRouter } from "../../lib/router";
+import { useAuth } from "../../context/AuthContext";
+import { BookOpen, Menu, X, ArrowRight, LogOut, ShieldCheck } from "lucide-react";
 
 export interface PublicHeaderProps {
   currentPath?: string;
@@ -9,6 +10,13 @@ export interface PublicHeaderProps {
 export const PublicHeader: React.FC<PublicHeaderProps> = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pathname = usePathname();
+  const { isAuthenticated, user, signOut } = useAuth();
+  const { navigate } = useRouter();
+
+  const handleSignOut = async () => {
+    await signOut();
+    navigate("/login");
+  };
 
   const navLinks = [
     { href: "/features", label: "Features" },
@@ -64,35 +72,58 @@ export const PublicHeader: React.FC<PublicHeaderProps> = () => {
 
           {/* Action CTAs */}
           <div className="hidden md:flex items-center gap-3">
-            <Link
-              href="/login"
-              className="text-xs font-semibold text-slateText-secondary hover:text-navy px-3 py-1.5 rounded hover:bg-tint transition-colors"
-            >
-              Sign In
-            </Link>
-            <Link
-              href="/app"
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-bold text-white bg-electric hover:bg-electric-hover shadow-btn transition cursor-pointer"
-            >
-              <span>Launch Demo</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </Link>
+            {isAuthenticated ? (
+              <div className="flex items-center gap-2">
+                <Link
+                  href="/app"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-bold text-white bg-electric hover:bg-electric-hover shadow-btn transition cursor-pointer"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>Go to Vault</span>
+                </Link>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  className="text-xs font-semibold text-slateText-secondary hover:text-navy px-2.5 py-1.5 rounded hover:bg-tint transition-colors flex items-center gap-1 cursor-pointer"
+                  title={`Sign out (${user?.email})`}
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Sign Out</span>
+                </button>
+              </div>
+            ) : (
+              <>
+                <Link
+                  href="/login"
+                  className="text-xs font-semibold text-slateText-secondary hover:text-navy px-3 py-1.5 rounded hover:bg-tint transition-colors"
+                >
+                  Sign In
+                </Link>
+                <Link
+                  href="/demo"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-bold text-white bg-electric hover:bg-electric-hover shadow-btn transition cursor-pointer"
+                >
+                  <span>Launch Demo</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+              </>
+            )}
           </div>
 
           {/* Mobile Hamburger Button */}
           <div className="flex md:hidden items-center gap-2">
             <Link
-              href="/app"
+              href={isAuthenticated ? "/app" : "/demo"}
               className="px-2.5 py-1 text-xs font-bold text-white bg-electric rounded shadow-xs"
             >
-              Demo
+              {isAuthenticated ? "Vault" : "Demo"}
             </Link>
             <button
               type="button"
               onClick={() => setMobileMenuOpen((prev) => !prev)}
               aria-expanded={mobileMenuOpen}
               aria-label="Toggle navigation menu"
-              className="p-1.5 rounded text-slateText-secondary hover:text-navy hover:bg-tint focus-visible:outline-2 focus-visible:outline-electric"
+              className="p-1.5 rounded text-slateText-secondary hover:text-navy hover:bg-tint focus-visible:outline-2 focus-visible:outline-electric cursor-pointer"
             >
               {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
@@ -123,21 +154,47 @@ export const PublicHeader: React.FC<PublicHeaderProps> = () => {
             })}
           </div>
           <div className="pt-3 border-t border-border flex flex-col gap-2">
-            <Link
-              href="/login"
-              onClick={() => setMobileMenuOpen(false)}
-              className="px-3 py-2 rounded text-sm font-semibold text-slateText-secondary hover:text-navy text-center border border-border"
-            >
-              Sign In
-            </Link>
-            <Link
-              href="/app"
-              onClick={() => setMobileMenuOpen(false)}
-              className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded text-sm font-bold text-white bg-electric hover:bg-electric-hover shadow-btn"
-            >
-              <span>Launch Demo Workspace</span>
-              <ArrowRight className="w-4 h-4" />
-            </Link>
+            {isAuthenticated ? (
+              <>
+                <Link
+                  href="/app"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded text-sm font-bold text-white bg-electric hover:bg-electric-hover shadow-btn"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Open Research Vault</span>
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    handleSignOut();
+                  }}
+                  className="px-3 py-2 rounded text-sm font-semibold text-slateText-secondary hover:text-navy text-center border border-border cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span>Sign Out ({user?.email})</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <Link
+                  href="/login"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 rounded text-sm font-semibold text-slateText-secondary hover:text-navy text-center border border-border"
+                >
+                  Sign In
+                </Link>
+                <Link
+                  href="/demo"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded text-sm font-bold text-white bg-electric hover:bg-electric-hover shadow-btn"
+                >
+                  <span>Launch Demo Workspace</span>
+                  <ArrowRight className="w-4 h-4" />
+                </Link>
+              </>
+            )}
           </div>
         </div>
       )}

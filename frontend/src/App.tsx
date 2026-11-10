@@ -3,13 +3,14 @@ import { Header } from "./components/Header";
 import { UploadDropZone } from "./components/UploadDropZone";
 import { DocumentLibrary } from "./components/DocumentLibrary";
 import { QAWorkspace } from "./components/QAWorkspace";
-import { fetchDocuments, deleteDocument, checkHealth } from "./lib/api";
+import { fetchDocuments, deleteDocument, checkHealth, type AuthMode } from "./lib/api";
 import type { DocumentMeta, HealthResponse, QAEntry } from "./types/api";
 
-import { RouterProvider, usePathname } from "./lib/router";
+import { RouterProvider, usePathname, Link } from "./lib/router";
 import { AuthProvider } from "./context/AuthContext";
 import { PublicHeader } from "./components/public/PublicHeader";
 import { PublicFooter } from "./components/public/PublicFooter";
+import { ProtectedRoute } from "./components/auth/ProtectedRoute";
 
 import { LandingPage } from "./pages/public/LandingPage";
 import { FeaturesPage } from "./pages/public/FeaturesPage";
@@ -19,14 +20,19 @@ import { AboutPage } from "./pages/public/AboutPage";
 import { ContactPage } from "./pages/public/ContactPage";
 import { PrivacyPage } from "./pages/public/PrivacyPage";
 import { TermsPage } from "./pages/public/TermsPage";
-import { AuthNoticePage } from "./pages/public/AuthNoticePage";
 import { NotFoundPage } from "./pages/public/NotFoundPage";
 
+import { LoginPage } from "./pages/auth/LoginPage";
+import { SignUpPage } from "./pages/auth/SignUpPage";
+import { ForgotPasswordPage } from "./pages/auth/ForgotPasswordPage";
+import { ResetPasswordPage } from "./pages/auth/ResetPasswordPage";
+import { AuthCallbackPage } from "./pages/auth/AuthCallbackPage";
+
 /**
- * Interactive Demo Workspace (Single-Document Prototype)
- * Preserved from Milestone 1.4 baseline under route /app
+ * Interactive Workspace for DocuMind AI.
+ * Operates in "authenticated" mode (for /app/*) or "guest" mode (for /demo/*).
  */
-function WorkspaceApp() {
+function WorkspaceApp({ mode = "guest" }: { mode?: AuthMode }) {
   const [documents, setDocuments] = useState<DocumentMeta[]>([]);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [entries, setEntries] = useState<QAEntry[]>([]);
@@ -51,7 +57,7 @@ function WorkspaceApp() {
     setLoadingDocs(true);
     setLibraryError(null);
     try {
-      const data = await fetchDocuments();
+      const data = await fetchDocuments(mode);
       setDocuments(data.documents);
 
       // If selected document was deleted elsewhere, reset scope to All Documents
@@ -66,7 +72,7 @@ function WorkspaceApp() {
     } finally {
       setLoadingDocs(false);
     }
-  }, []);
+  }, [mode]);
 
   // Initial load
   useEffect(() => {
@@ -84,7 +90,7 @@ function WorkspaceApp() {
   // Handle document deletion
   async function handleDeleteDocument(docId: string, filename: string) {
     try {
-      await deleteDocument(docId);
+      await deleteDocument(docId, mode);
       if (selectedDocId === docId) {
         setSelectedDocId(null);
       }
@@ -103,7 +109,28 @@ function WorkspaceApp() {
         health={health}
         loadingHealth={loadingHealth}
         onRefreshHealth={loadHealth}
+        mode={mode}
       />
+
+      {/* Guest Mode Informational Banner */}
+      {mode === "guest" && (
+        <div className="bg-electric/10 border-b border-electric/20 px-4 py-1.5 flex items-center justify-between text-xs text-electric shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="font-bold uppercase tracking-wider font-mono text-[10px] bg-electric text-white px-1.5 py-0.5 rounded">
+              Guest Demo
+            </span>
+            <span className="text-slateText-primary font-medium">
+              You are exploring DocuMind in guest mode (1 document, 5 questions per session).
+            </span>
+          </div>
+          <Link
+            href="/signup"
+            className="font-bold underline hover:text-electric-hover shrink-0 ml-2"
+          >
+            Create an Account for Unlimited Vaults →
+          </Link>
+        </div>
+      )}
 
       {/* Main Body: Responsive Sidebar + Conversational Workspace */}
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
@@ -114,7 +141,7 @@ function WorkspaceApp() {
         >
           {/* Upload Section */}
           <div className="p-4 border-b border-border bg-surface shrink-0">
-            <UploadDropZone onUploadSuccess={handleUploadSuccess} />
+            <UploadDropZone onUploadSuccess={handleUploadSuccess} mode={mode} />
           </div>
 
           {/* Library Section */}
@@ -137,6 +164,7 @@ function WorkspaceApp() {
           onSelectDoc={setSelectedDocId}
           entries={entries}
           setEntries={setEntries}
+          mode={mode}
         />
       </div>
     </div>
@@ -162,12 +190,58 @@ function PublicLayout({ children }: { children: React.ReactNode }) {
 function RouteDispatcher() {
   const pathname = usePathname();
 
-  // Interactive prototype workspace
+  // 1. Protected Authenticated Workspace (/app and /app/*)
   if (pathname === "/app" || pathname.startsWith("/app/")) {
-    return <WorkspaceApp />;
+    return (
+      <ProtectedRoute>
+        <WorkspaceApp mode="authenticated" />
+      </ProtectedRoute>
+    );
   }
 
-  // Public marketing & documentation routes
+  // 2. Guest Demo Workspace (/demo and /demo/*)
+  if (pathname === "/demo" || pathname.startsWith("/demo/")) {
+    return <WorkspaceApp mode="guest" />;
+  }
+
+  // 3. Authentication & Account Recovery Routes
+  if (pathname === "/login") {
+    return (
+      <PublicLayout>
+        <LoginPage />
+      </PublicLayout>
+    );
+  }
+
+  if (pathname === "/signup") {
+    return (
+      <PublicLayout>
+        <SignUpPage />
+      </PublicLayout>
+    );
+  }
+
+  if (pathname === "/forgot-password") {
+    return (
+      <PublicLayout>
+        <ForgotPasswordPage />
+      </PublicLayout>
+    );
+  }
+
+  if (pathname === "/reset-password") {
+    return (
+      <PublicLayout>
+        <ResetPasswordPage />
+      </PublicLayout>
+    );
+  }
+
+  if (pathname === "/auth/callback") {
+    return <AuthCallbackPage />;
+  }
+
+  // 4. Public marketing & documentation routes
   switch (pathname) {
     case "/":
       return (
@@ -215,13 +289,6 @@ function RouteDispatcher() {
       return (
         <PublicLayout>
           <TermsPage />
-        </PublicLayout>
-      );
-    case "/login":
-    case "/signup":
-      return (
-        <PublicLayout>
-          <AuthNoticePage />
         </PublicLayout>
       );
     default:

@@ -43,7 +43,7 @@ export const TermsPage: React.FC = () => {
             <h2 className="text-xl font-bold text-navy">1. Acceptance of Terms</h2>
             <p className="text-sm text-slateText-secondary leading-relaxed">
               By accessing the DocuMind AI website or utilizing the interactive demonstration workspace
-              at <code className="text-xs font-mono text-electric bg-tint px-1.5 py-0.5 rounded">/app</code>,
+              at <code className="text-xs font-mono text-electric bg-tint px-1.5 py-0.5 rounded">/demo</code>,
               you acknowledge that you have read, understood, and agree to be bound by these Provisional Terms.
             </p>
           </div>
@@ -113,7 +113,7 @@ export const TermsPage: React.FC = () => {
       <section className="py-16 bg-canvas">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
           <Link
-            href="/app"
+            href="/demo"
             className="inline-flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-bold text-white bg-electric hover:bg-electric-hover shadow-btn transition cursor-pointer"
           >
             <span>Return to Interactive Demo</span>

@@ -566,6 +566,34 @@ def create_app(
                 detail="Failed to generate answer.",
             ) from exc
 
+    # --------------------------------------------------------------------------
+    # Single-Page Application (SPA) Fallback Route
+    # --------------------------------------------------------------------------
+    @application.get("/{full_path:path}", response_class=FileResponse, include_in_schema=False)
+    def serve_spa_fallback(full_path: str) -> FileResponse:
+        """Serve SPA index.html for client-side routing on page refresh and direct navigation.
+        
+        API routes starting with api/ fail closed with standard 404.
+        """
+        if full_path.startswith("api/") or full_path == "api":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="API endpoint not found.",
+            )
+
+        react_index = dist_dir / "index.html"
+        if react_index.is_file():
+            return FileResponse(react_index, media_type="text/html")
+
+        vanilla_index = legacy_static_dir / "index.html"
+        if vanilla_index.is_file():
+            return FileResponse(vanilla_index, media_type="text/html")
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Frontend index.html not found.",
+        )
+
     return application
 
 

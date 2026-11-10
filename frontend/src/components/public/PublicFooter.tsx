@@ -35,7 +35,7 @@ export const PublicFooter: React.FC = () => {
             </h4>
             <ul className="space-y-2 text-xs">
               <li>
-                <Link href="/app" className="hover:text-white transition-colors text-slate-300 font-semibold inline-flex items-center gap-1">
+                <Link href="/demo" className="hover:text-white transition-colors text-slate-300 font-semibold inline-flex items-center gap-1">
                   <span>Interactive Demo</span>
                   <span className="px-1 py-0.2 rounded text-[9px] bg-electric/20 text-electric font-mono">Live</span>
                 </Link>
@@ -135,7 +135,7 @@ export const PublicFooter: React.FC = () => {
           <p>© 2026 DocuMind AI. Built by xyther29. Developed under open research guidelines.</p>
           <div className="flex items-center gap-4 text-[11px]">
             <span className="text-slate-400">
-              Interactive Prototype: <code className="text-electric-subtle">/app</code>
+              Interactive Prototype: <code className="text-electric-subtle">/demo</code>
             </span>
             <span>·</span>
             <span className="text-slate-400">

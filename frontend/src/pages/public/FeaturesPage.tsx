@@ -248,7 +248,7 @@ export const FeaturesPage: React.FC = () => {
           </p>
           <div className="mt-6 flex justify-center">
             <Link
-              href="/app"
+              href="/demo"
               className="inline-flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-bold text-white bg-electric hover:bg-electric-hover shadow-btn transition cursor-pointer"
             >
               <span>Launch Interactive Demo</span>

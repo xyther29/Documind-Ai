@@ -41,7 +41,7 @@ export const LandingPage: React.FC = () => {
             {/* CTAs */}
             <div className="mt-8 flex flex-col sm:flex-row items-center gap-4 w-full sm:w-auto">
               <Link
-                href="/app"
+                href="/demo"
                 className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-lg text-sm font-bold text-white bg-electric hover:bg-electric-hover shadow-btn transition cursor-pointer"
               >
                 <span>Launch Interactive Demo</span>
@@ -280,7 +280,7 @@ export const LandingPage: React.FC = () => {
           </p>
           <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-4">
             <Link
-              href="/app"
+              href="/demo"
               className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-lg text-sm font-bold text-navy bg-white hover:bg-slate-100 shadow-lg transition cursor-pointer"
             >
               <span>Launch Demo Workspace</span>

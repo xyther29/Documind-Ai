@@ -1,18 +1,27 @@
 import React, { useState, useEffect, createContext, useContext, useCallback } from "react";
+import { validateRedirectUrl, validatePasswordRecoveryRedirect } from "./redirect";
+
+export { validateRedirectUrl, validatePasswordRecoveryRedirect };
 
 /**
  * Lightweight, zero-dependency client-side router built on the native browser History API.
  * Adheres strictly to DocuMind accessibility and reduced-motion invariants.
  */
 
-interface RouterContextType {
+export interface RouterContextType {
   pathname: string;
+  search: string;
+  hash: string;
   navigate: (href: string) => void;
+  getQueryParam: (key: string) => string | null;
 }
 
 const RouterContext = createContext<RouterContextType>({
   pathname: typeof window !== "undefined" ? window.location.pathname : "/",
+  search: typeof window !== "undefined" ? window.location.search : "",
+  hash: typeof window !== "undefined" ? window.location.hash : "",
   navigate: () => {},
+  getQueryParam: () => null,
 });
 
 export const useRouter = () => useContext(RouterContext);
@@ -22,12 +31,18 @@ export const usePathname = (): string => {
   return pathname;
 };
 
+export const useSearch = (): string => {
+  const { search } = useContext(RouterContext);
+  return search;
+};
+
 /**
  * Programmatic client-side navigation respecting prefers-reduced-motion.
  */
 export function navigate(href: string) {
   if (typeof window === "undefined") return;
-  if (window.location.pathname === href) return;
+  const currentFullUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (currentFullUrl === href) return;
 
   window.history.pushState(null, "", href);
   window.dispatchEvent(new PopStateEvent("popstate"));
@@ -41,15 +56,21 @@ export interface RouterProviderProps {
 }
 
 export const RouterProvider: React.FC<RouterProviderProps> = ({ children }) => {
-  const [pathname, setPathname] = useState<string>(() => {
-    return typeof window !== "undefined" ? window.location.pathname : "/";
-  });
+  const [locationState, setLocationState] = useState(() => ({
+    pathname: typeof window !== "undefined" ? window.location.pathname : "/",
+    search: typeof window !== "undefined" ? window.location.search : "",
+    hash: typeof window !== "undefined" ? window.location.hash : "",
+  }));
 
   useEffect(() => {
     if (typeof window === "undefined") return;
 
     const handlePopState = () => {
-      setPathname(window.location.pathname);
+      setLocationState({
+        pathname: window.location.pathname,
+        search: window.location.search,
+        hash: window.location.hash,
+      });
       const prefersReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       window.scrollTo({ top: 0, behavior: prefersReduced ? "auto" : "smooth" });
     };
@@ -62,8 +83,29 @@ export const RouterProvider: React.FC<RouterProviderProps> = ({ children }) => {
     navigate(href);
   }, []);
 
+  const getQueryParam = useCallback(
+    (key: string): string | null => {
+      if (typeof window === "undefined") return null;
+      try {
+        const params = new URLSearchParams(locationState.search);
+        return params.get(key);
+      } catch (_) {
+        return null;
+      }
+    },
+    [locationState.search]
+  );
+
   return (
-    <RouterContext.Provider value={{ pathname, navigate: handleNavigate }}>
+    <RouterContext.Provider
+      value={{
+        pathname: locationState.pathname,
+        search: locationState.search,
+        hash: locationState.hash,
+        navigate: handleNavigate,
+        getQueryParam,
+      }}
+    >
       {children}
     </RouterContext.Provider>
   );

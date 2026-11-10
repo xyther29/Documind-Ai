@@ -4,7 +4,7 @@ import { WelcomeGuidance } from "./WelcomeGuidance";
 import { QAEntryItem } from "./QAEntryItem";
 import { InputDock } from "./InputDock";
 import type { DocumentMeta, QAEntry, AskRequest } from "../types/api";
-import { askQuestion } from "../lib/api";
+import { askQuestion, type AuthMode } from "../lib/api";
 
 interface QAWorkspaceProps {
   documents: DocumentMeta[];
@@ -12,6 +12,7 @@ interface QAWorkspaceProps {
   onSelectDoc: (docId: string | null) => void;
   entries: QAEntry[];
   setEntries: React.Dispatch<React.SetStateAction<QAEntry[]>>;
+  mode?: AuthMode;
 }
 
 export const QAWorkspace: React.FC<QAWorkspaceProps> = ({
@@ -20,6 +21,7 @@ export const QAWorkspace: React.FC<QAWorkspaceProps> = ({
   onSelectDoc,
   entries,
   setEntries,
+  mode,
 }) => {
   const streamEndRef = useRef<HTMLDivElement>(null);
   const selectedDoc = documents.find((d) => d.doc_id === selectedDocId);
@@ -67,7 +69,7 @@ export const QAWorkspace: React.FC<QAWorkspaceProps> = ({
     }
 
     try {
-      const response = await askQuestion(payload);
+      const response = await askQuestion(payload, mode);
 
       setEntries((prev) =>
         prev.map((e) => {

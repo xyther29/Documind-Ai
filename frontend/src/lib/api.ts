@@ -19,6 +19,8 @@ export interface UploadProgress {
   message?: string;
 }
 
+export type AuthMode = "authenticated" | "guest";
+
 interface AuthHeadersResult {
   kind: "authenticated" | "guest";
   headers: Record<string, string>;
@@ -27,79 +29,133 @@ interface AuthHeadersResult {
 /**
  * Resolves the appropriate credentials for protected API requests.
  * 
- * Strict Precedence Rules:
- * 1. If an authenticated user session exists, attach Authorization: Bearer <token>.
- *    Never attach guest credentials alongside a Bearer token.
- * 2. If no authenticated session exists, attach X-Guest-Session: <token>.
+ * Strict Phase 3.4 Precedence & Boundary Rules:
+ * 1. /app and /app/* routes send Bearer credentials ONLY.
+ *    Invalid or expired Bearer credentials must NEVER fall back to guest credentials.
+ * 2. /demo and /demo/* routes send guest credentials ONLY.
+ * 3. Public marketing and auth pages do not attach document API credentials.
+ * 4. Guest and authenticated session lifecycles remain completely independent.
  */
-async function resolveAuthHeaders(): Promise<AuthHeadersResult> {
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const { data } = await supabase.auth.getSession();
-      const accessToken = data.session?.access_token;
-      if (accessToken) {
-        return {
-          kind: "authenticated",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        };
-      }
-    } catch (_) {
-      // Fall through to guest if session retrieval fails
+export async function resolveAuthHeaders(explicitMode?: AuthMode): Promise<AuthHeadersResult> {
+  let mode = explicitMode;
+
+  if (!mode && typeof window !== "undefined") {
+    const pathname = window.location.pathname;
+    if (pathname === "/app" || pathname.startsWith("/app/")) {
+      mode = "authenticated";
+    } else if (pathname === "/demo" || pathname.startsWith("/demo/")) {
+      mode = "guest";
     }
   }
 
-  // Fallback to guest session
-  const guestToken = await getOrFetchGuestToken();
-  return {
-    kind: "guest",
-    headers: {
-      "X-Guest-Session": guestToken,
-    },
-  };
+  // 1. Authenticated mode (Required for /app/*)
+  if (mode === "authenticated") {
+    if (!isSupabaseConfigured || !supabase) {
+      throw new Error("Authentication service is not configured.");
+    }
+    try {
+      const { data, error } = await supabase.auth.getSession();
+      if (error || !data.session?.access_token) {
+        throw new Error("No active authenticated session found.");
+      }
+      return {
+        kind: "authenticated",
+        headers: {
+          Authorization: `Bearer ${data.session.access_token}`,
+        },
+      };
+    } catch (err: any) {
+      // Strict rule: NEVER fall back to guest session when authenticated mode is required
+      throw new Error(`Authentication required: ${err.message}`);
+    }
+  }
+
+  // 2. Guest mode (Required for /demo/*)
+  if (mode === "guest") {
+    const guestToken = await getOrFetchGuestToken();
+    return {
+      kind: "guest",
+      headers: {
+        "X-Guest-Session": guestToken,
+      },
+    };
+  }
+
+  // 3. Fallback for exploratory calls if neither mode matches explicitly
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data } = await supabase.auth.getSession();
+      if (data.session?.access_token) {
+        return {
+          kind: "authenticated",
+          headers: {
+            Authorization: `Bearer ${data.session.access_token}`,
+          },
+        };
+      }
+    } catch (_) {}
+  }
+
+  throw new Error("Credentials required: must be invoked from an authenticated (/app) or guest demo (/demo) route.");
 }
 
-interface AuthRequestOptions extends RequestInit {
+interface AuthRequestOptions extends Omit<RequestInit, "mode"> {
+  authMode?: AuthMode;
   _retryCount?: number;
 }
 
 /**
  * Authenticated fetch wrapper handling credential injection and single-retry 401 recovery.
- * Never retries on 403 quota responses.
+ * Never retries on 403 quota or 429 rate limit responses.
+ * Dispatches documind:auth-unauthorized only after authenticated refresh failure.
  */
 async function authFetch(endpoint: string, options: AuthRequestOptions = {}): Promise<Response> {
-  const retryCount = options._retryCount || 0;
-  const authInfo = await resolveAuthHeaders();
+  const { authMode, _retryCount = 0, ...fetchInit } = options;
+  const retryCount = _retryCount;
+  const authInfo = await resolveAuthHeaders(authMode);
 
-  const headers = new Headers(options.headers || {});
+  const headers = new Headers(fetchInit.headers || {});
   for (const [k, v] of Object.entries(authInfo.headers)) {
     headers.set(k, v);
   }
 
   const response = await fetch(`${API_BASE}${endpoint}`, {
-    ...options,
+    ...fetchInit,
     headers,
   });
 
-  // Handle 401 retry at most once
-  if (response.status === 401 && retryCount < 1) {
-    if (authInfo.kind === "authenticated" && isSupabaseConfigured && supabase) {
-      try {
-        const { data, error } = await supabase.auth.refreshSession();
-        if (!error && data.session?.access_token) {
-          return authFetch(endpoint, { ...options, _retryCount: retryCount + 1 });
+  // Handle 401 Unauthorized: attempt single token refresh
+  if (response.status === 401) {
+    if (retryCount < 1) {
+      if (authInfo.kind === "authenticated" && isSupabaseConfigured && supabase) {
+        try {
+          const { data, error } = await supabase.auth.refreshSession();
+          if (!error && data.session?.access_token) {
+            return authFetch(endpoint, { ...options, _retryCount: retryCount + 1 });
+          }
+        } catch (_) {}
+        // Authenticated refresh failed: notify once
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("documind:auth-unauthorized"));
         }
-      } catch (_) {}
-    } else if (authInfo.kind === "guest") {
-      clearGuestSession();
-      try {
-        await getOrFetchGuestToken();
-        return authFetch(endpoint, { ...options, _retryCount: retryCount + 1 });
-      } catch (_) {}
+        return response;
+      } else if (authInfo.kind === "guest") {
+        clearGuestSession();
+        try {
+          await getOrFetchGuestToken();
+          return authFetch(endpoint, { ...options, _retryCount: retryCount + 1 });
+        } catch (_) {}
+        return response;
+      }
+    } else if (authInfo.kind === "authenticated") {
+      // Already retried once and still 401
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("documind:auth-unauthorized"));
+      }
     }
   }
 
+  // 403 (Quota limit) and 429 (Rate limit) are returned directly without retrying or destroying sessions
   return response;
 }
 
@@ -109,7 +165,8 @@ async function authFetch(endpoint: string, options: AuthRequestOptions = {}): Pr
 export function uploadDocument(
   file: File,
   onProgress?: (progress: UploadProgress) => void,
-  retryCount: number = 0
+  retryCount: number = 0,
+  mode?: AuthMode
 ): Promise<DocumentMeta> {
   return new Promise(async (resolve, reject) => {
     // Client-side extension check
@@ -144,7 +201,7 @@ export function uploadDocument(
 
     let authInfo: AuthHeadersResult;
     try {
-      authInfo = await resolveAuthHeaders();
+      authInfo = await resolveAuthHeaders(mode);
     } catch (err: any) {
       return reject(new Error(`Authentication failed before upload: ${err.message}`));
     }
@@ -224,14 +281,17 @@ export function uploadDocument(
           try {
             const { data, error } = await supabase.auth.refreshSession();
             if (!error && data.session?.access_token) {
-              return uploadDocument(file, onProgress, retryCount + 1).then(resolve).catch(reject);
+              return uploadDocument(file, onProgress, retryCount + 1, mode).then(resolve).catch(reject);
             }
           } catch (_) {}
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("documind:auth-unauthorized"));
+          }
         } else if (authInfo.kind === "guest") {
           clearGuestSession();
           try {
             await getOrFetchGuestToken();
-            return uploadDocument(file, onProgress, retryCount + 1).then(resolve).catch(reject);
+            return uploadDocument(file, onProgress, retryCount + 1, mode).then(resolve).catch(reject);
           } catch (_) {}
         }
         let detail = `Upload failed with HTTP ${xhr.status}`;
@@ -248,7 +308,11 @@ export function uploadDocument(
         });
         reject(new Error(detail));
       } else {
-        // Any other error (including 403 quota) is never retried
+        // If 401 after retry: notify
+        if (xhr.status === 401 && authInfo.kind === "authenticated" && typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("documind:auth-unauthorized"));
+        }
+        // Any other error (including 403 quota or 429) is never retried and never destroys session
         let detail = `Upload failed with HTTP ${xhr.status}`;
         try {
           const errObj = JSON.parse(xhr.responseText);
@@ -283,24 +347,12 @@ export function uploadDocument(
 }
 
 /**
- * Public health check endpoint.
- * In accordance with rules: remains public and NEVER triggers guest session creation.
+ * Fetch documents scoped to caller's authenticated or guest partition.
  */
-export async function checkHealth(): Promise<HealthResponse> {
-  const res = await fetch(`${API_BASE}/api/health`);
+export async function fetchDocuments(mode?: AuthMode): Promise<DocumentListResponse> {
+  const res = await authFetch("/api/documents", { method: "GET", authMode: mode });
   if (!res.ok) {
-    throw new Error(`Health check failed with status ${res.status}`);
-  }
-  return res.json();
-}
-
-/**
- * Fetch documents using authenticated credentials (Bearer or Guest Session).
- */
-export async function fetchDocuments(): Promise<DocumentListResponse> {
-  const res = await authFetch("/api/documents");
-  if (!res.ok) {
-    let detail = `Failed to fetch documents: ${res.status}`;
+    let detail = `Failed to fetch documents: HTTP ${res.status}`;
     try {
       const errJson = await res.json();
       if (errJson?.detail) detail = errJson.detail;
@@ -311,14 +363,12 @@ export async function fetchDocuments(): Promise<DocumentListResponse> {
 }
 
 /**
- * Delete document using authenticated credentials (Bearer or Guest Session).
+ * Delete document from caller's authenticated or guest partition.
  */
-export async function deleteDocument(docId: string): Promise<{ message: string; doc_id: string }> {
-  const res = await authFetch(`/api/documents/${encodeURIComponent(docId)}`, {
-    method: "DELETE",
-  });
+export async function deleteDocument(docId: string, mode?: AuthMode): Promise<{ message: string; doc_id: string }> {
+  const res = await authFetch(`/api/documents/${docId}`, { method: "DELETE", authMode: mode });
   if (!res.ok) {
-    let detail = `Failed to delete document: ${res.status}`;
+    let detail = `Failed to delete document: HTTP ${res.status}`;
     try {
       const errJson = await res.json();
       if (errJson?.detail) detail = errJson.detail;
@@ -329,9 +379,9 @@ export async function deleteDocument(docId: string): Promise<{ message: string; 
 }
 
 /**
- * Ask question using authenticated credentials (Bearer or Guest Session).
+ * Ask question using authenticated credentials or guest credentials.
  */
-export async function askQuestion(payload: AskRequest): Promise<AskResponse> {
+export async function askQuestion(payload: AskRequest, mode?: AuthMode): Promise<AskResponse> {
   const requestId = payload.request_id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : undefined);
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (requestId) {
@@ -342,6 +392,7 @@ export async function askQuestion(payload: AskRequest): Promise<AskResponse> {
     method: "POST",
     headers,
     body: JSON.stringify(bodyPayload),
+    authMode: mode,
   });
   if (!res.ok) {
     let detail = `Ask request failed with status ${res.status}`;
@@ -349,7 +400,20 @@ export async function askQuestion(payload: AskRequest): Promise<AskResponse> {
       const errJson = await res.json();
       if (errJson?.detail) detail = errJson.detail;
     } catch (_) {}
-    throw new Error(detail);
+    const err: any = new Error(detail);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+
+/**
+ * Retrieve public health metrics (unauthenticated).
+ */
+export async function checkHealth(): Promise<HealthResponse> {
+  const res = await fetch(`${API_BASE}/api/health`);
+  if (!res.ok) {
+    throw new Error(`Health check failed with status ${res.status}`);
   }
   return res.json();
 }

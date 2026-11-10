@@ -47,7 +47,7 @@ export const PrivacyPage: React.FC = () => {
             </h2>
             <div className="text-sm text-slateText-secondary space-y-3 leading-relaxed">
               <p>
-                In the current demonstration prototype hosted at <code className="text-xs font-mono text-electric bg-tint px-1.5 py-0.5 rounded">/app</code>:
+                In the current demonstration prototype hosted at <code className="text-xs font-mono text-electric bg-tint px-1.5 py-0.5 rounded">/demo</code>:
               </p>
               <ul className="list-disc pl-6 space-y-2">
                 <li>
@@ -142,7 +142,7 @@ export const PrivacyPage: React.FC = () => {
       <section className="py-16 bg-canvas">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
           <Link
-            href="/app"
+            href="/demo"
             className="inline-flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-bold text-white bg-electric hover:bg-electric-hover shadow-btn transition cursor-pointer"
           >
             <span>Return to Interactive Demo</span>

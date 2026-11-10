@@ -222,6 +222,20 @@ def run_headless_chrome_verification() -> dict:
         assert verified_assets >= 2, "Expected at least 1 CSS and 1 JS bundle in production build"
         results["fastapi_spa_assets"] = True
 
+        # 1b. Verify all auth and workspace routes serve SPA index
+        auth_routes = ["/login", "/signup", "/forgot-password", "/reset-password", "/auth/callback", "/demo", "/app"]
+        for r in auth_routes:
+            resp = client.get(r)
+            assert resp.status_code == 200, f"Route {r} failed: {resp.status_code}"
+            assert '<div id="root">' in resp.text
+        print(f"   [PASS] FastAPI successfully serves SPA index for all {len(auth_routes)} auth & workspace routes.")
+        results["spa_auth_routes"] = True
+
+        # 1c. Run redirect security test suite
+        print("1c. Running redirect security unit test suite...")
+        subprocess.run(["node", "--experimental-strip-types", "scripts/test_redirect_security.mjs"], check=True)
+        results["redirect_security"] = True
+
     # 2. Real Headless Chrome DOM Verification
     chrome_path = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
     if not chrome_path.is_file():
